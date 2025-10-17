@@ -76,26 +76,31 @@ Przed rozpoczęciem upewnij się, że masz:
 1.  Konto w **AWS**.
 2.  Zainstalowane i skonfigurowane **AWS CLI** z poświadczeniami dostępowymi.
 3.  Zainstalowany **Terraform** (wersja 1.0.0 lub nowsza).
-4.  Wygenerowaną parę kluczy SSH (np. za pomocą `ssh-keygen`).
-5.  **Klucz licencyjny MaxMind GeoLite2**. Można go uzyskać za darmo po rejestracji na [stronie MaxMind](https://www.maxmind.com/en/geolite2/signup).
+4.  **Klucz licencyjny i ID konta MaxMind GeoLite2**. Można je uzyskać za darmo po rejestracji na [stronie MaxMind](https://www.maxmind.com/en/geolite2/signup).
 
 ## 6. Instrukcja Uruchomienia
 
-1.  Sklonuj to repozytorium lub pobierz pliki.
-2.  **Wygeneruj parę kluczy SSH**, jeśli jeszcze jej nie masz:
-    ```bash
-    ssh-keygen -t rsa -b 4096 -f honeypot-key
-    ```
-3.  **Edytuj plik `main.tf`**:
-    - Wklej zawartość swojego klucza publicznego (`honeypot-key.pub`) do zmiennej `ssh_public_key_content`.
-4.  **Edytuj plik `user_data.sh`**:
-    - Wklej swój klucz licencyjny MaxMind w miejsce `TWOJ_KLUCZ_LICENCYJNY_MAXMIND`.
+1.  **Sklonuj to repozytorium lub pobierz pliki**.
+
+2.  **Stwórz parę kluczy SSH w konsoli AWS**:
+    - Zaloguj się do konsoli AWS i przejdź do usługi **EC2**.
+    - W menu po lewej stronie znajdź `Network & Security` -> `Key Pairs`.
+    - Kliknij `Create key pair`.
+    - Wpisz nazwę: **`projekt-bsk2-key`** (musi być dokładnie taka nazwa!).
+    - Wybierz format klucza prywatnego: `pem`.
+    - Kliknij `Create key pair` i pobierz plik `projekt-bsk2-key.pem`.
+    - **Umieść pobrany plik `projekt-bsk2-key.pem` w głównym katalogu projektu**.
+
+3.  **Edytuj plik `user_data.sh`**:
+    - Wklej swoje ID konta i klucz licencyjny MaxMind w zmiennych `GEOIPUPDATE_ACCOUNT_ID` i `GEOIPUPDATE_LICENSE_KEY`.
     - (Opcjonalnie) Zmień hasło administratora Grafany w zmiennej `GRAFANA_ADMIN_PASSWORD`.
-5.  **Zainicjuj Terraform**:
+
+4.  **Zainicjuj Terraform**:
     ```bash
     terraform init
     ```
-6.  **Wdróż infrastrukturę**:
+
+5.  **Wdróż infrastrukturę**:
     ```bash
     terraform apply -auto-approve
     ```
@@ -105,14 +110,14 @@ Przed rozpoczęciem upewnij się, że masz:
 
 1.  **Stwórz tunel SSH do Grafany** (komenda zostanie wyświetlona na wyjściu `terraform apply`):
     ```bash
-    ssh -i honeypot-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@<PUBLICZNE_IP>
+    ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@<PUBLICZNE_IP>
     ```
 2.  Otwórz przeglądarkę i wejdź na `http://localhost:3000`.
 3.  Zaloguj się do Grafany (użytkownik: `admin`, hasło: to, które ustawiłeś w skrypcie).
 4.  Zaimportuj gotowy dashboard, podając ID `23141` w sekcji `Dashboards -> Import`.
-5.  Pobierz pliki z przechwyconym ruchem (`.pcap`) za pomocą `scp` do analizy w Wireshark:
+5.  Pobierz pliki z przechwyconym ruchem (`.pcap`) za pomocą `scp` do analizy w Wireshark (komenda również na wyjściu `terraform apply`):
     ```bash
-    scp -i honeypot-key.pem -P 22222 "ubuntu@<PUBLICZNE_IP>:/opt/honeypot/pcap_data/*.pcap" .
+    scp -i projekt-bsk2-key.pem -P 22222 "ubuntu@<PUBLICZNE_IP>:/opt/honeypot/pcap_data/*.pcap" .
     ```
 
 ## 8. Usuwanie Infrastruktury
