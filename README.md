@@ -66,8 +66,7 @@ Gdy instancja EC2 uruchamia się po raz pierwszy, wykonuje skrypt `user_data.sh`
 ├── main.tf                # Główny plik Terraform definiujący infrastrukturę AWS
 ├── user_data.sh           # Skrypt do automatycznej konfiguracji instancji EC2
 ├── README.md              # Ten plik
-└── honeypot-key.pem       # Twój prywatny klucz SSH (NIE WYSYŁAJ GO DO GIT!)
-└── honeypot-key.pub       # Twój publiczny klucz SSH
+└── projekt-bsk2-key.pem   # Klucz prywatny SSH pobrany z AWS (NIE WYSYŁAJ GO DO GIT!)
 ```
 
 ## 5. Wymagania
