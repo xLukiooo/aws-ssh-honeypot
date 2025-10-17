@@ -122,3 +122,9 @@ output "grafana_tunnel_command" {
 output "tcpdump_download_command" {
   value = "scp -i projekt-bsk2-key.pem -P 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}:/opt/honeypot/pcap_data/capture*.pcap ."
 }
+
+# Wyświetla przykładową komendę, jakiej użyłby atakujący, aby połączyć się z honeypotem.
+output "honeypot_ssh_test_command" {
+  description = "Komenda do przetestowania połączenia z honeypotem Cowrie (jako atakujący)"
+  value       = "ssh root@${aws_instance.honeypot_instance.public_ip}"
+}
