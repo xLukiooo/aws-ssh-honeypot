@@ -1,10 +1,8 @@
 #!/bin/bash
-# Wersja 2.1 - Architektura z automatyczną aktualizacją GeoIP i hardeningiem
+# Wersja 3.0 - Architektura z poprawkami stabilności i bezpieczeństwa
 
-# ZATRZYMAJ SKRYPT PRZY PIERWSZYM BŁĘDZIE - kluczowe dla stabilności i debugowania.
 set -e
 
-# Przekierowuje całe wyjście skryptu do pliku logu.
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
 # ===================================================================
@@ -14,8 +12,6 @@ echo "--- [ETAP 1/8] Definiowanie zmiennych konfiguracyjnych ---"
 
 # === Zmienne Użytkownika ===
 GRAFANA_ADMIN_PASSWORD="SuperTajneHaslo123!"
-# Dane do usługi GeoIP Update - zdobądź je za darmo z: https://www.maxmind.com/en/geolite2/signup
-# WAŻNE: Uzupełnij swoje dane!
 GEOIPUPDATE_ACCOUNT_ID="TWOJE_ID_KONTA_MAXMIND"
 GEOIPUPDATE_LICENSE_KEY="TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
 
@@ -44,18 +40,24 @@ apt-get upgrade -y
 apt-get install -y apt-transport-https ca-certificates curl software-properties-common iptables-persistent tcpdump
 
 echo "--- Tworzenie struktury katalogów dla konfiguracji ---"
-mkdir -p $COWRIE_DIR/etc $COWRIE_DIR/var/lib
+mkdir -p $COWRIE_DIR/etc $COWRIE_DIR/var/lib/log
 mkdir -p $PROMTAIL_DIR
 mkdir -p $LOKI_DIR
-mkdir -p $GRAFANA_DIR/provisioning/datasources
+mkdir -p $GRAFANA_DIR/provisioning/datasources $GRAFANA_DIR/data
 mkdir -p $PCAP_DIR
 
 # ===================================================================
 # SEKCJA 3: INSTALACJA DOCKERA
 # ===================================================================
 echo "--- [ETAP 3/8] Instalacja silnika kontenerów Docker CE i Docker Compose ---"
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+# Poprawka 1: Nowa, zalecana metoda dodawania klucza GPG Dockera
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io
 
@@ -80,7 +82,8 @@ services:
     container_name: cowrie
     volumes:
       - $COWRIE_DIR/etc:/cowrie/etc
-      - $COWRIE_DIR/var/lib:/cowrie/var/lib/cowrie
+      # Poprawka 2: Precyzyjne mapowanie katalogu z logami Cowrie
+      - $COWRIE_DIR/var/lib/log:/cowrie/var/lib/log
     ports:
       - "2222:2222"
       - "2223:2223"
@@ -97,6 +100,12 @@ services:
       - GEOIPUPDATE_FREQUENCY=72
     volumes:
       - geoip_data:/usr/share/GeoIP
+    # Poprawka 3: Healthcheck sprawdzający, czy baza GeoIP została pobrana
+    healthcheck:
+      test: ["CMD", "test", "-f", "/usr/share/GeoIP/GeoLite2-City.mmdb"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   loki:
     image: ${LOKI_IMAGE}
@@ -111,10 +120,13 @@ services:
   promtail:
     image: ${PROMTAIL_IMAGE}
     container_name: promtail
+    # Poprawka 3: Promtail poczeka, aż usługa geoipupdate będzie "zdrowa"
     depends_on:
-      - geoipupdate
+      geoipupdate:
+        condition: service_healthy
     volumes:
-      - $COWRIE_DIR/var/lib:/var/log/cowrie:ro
+      # Poprawka 2: Precyzyjne mapowanie katalogu z logami Cowrie
+      - $COWRIE_DIR/var/lib/log:/var/log/cowrie:ro
       - $PROMTAIL_DIR/promtail.yml:/etc/promtail/promtail.yml:ro
       - geoip_data:/usr/share/GeoIP:ro
     command: -config.file=/etc/promtail/promtail.yml
@@ -181,6 +193,7 @@ scrape_configs:
       - localhost
     labels:
       job: cowrie
+      # Poprawka 2: Ścieżka do logów jest teraz prostsza dzięki lepszemu mapowaniu
       __path__: /var/log/cowrie/cowrie.json*
   pipeline_stages:
   - json:
@@ -212,7 +225,9 @@ echo "Pliki konfiguracyjne wygenerowane."
 # SEKCJA 5: KONFIGURACJA SIECI (PRZEKIEROWANIA)
 # ===================================================================
 echo "--- [ETAP 5/8] Konfiguracja sieci i zmiana portu SSH ---"
-sed -i 's/^#\?Port 22/Port 22222/' /etc/ssh/sshd_config
+# Poprawka 5: Bezpieczna, idempotentna metoda zmiany portu SSH
+sed -i '/^#*Port /d' /etc/ssh/sshd_config
+echo "Port 22222" >> /etc/ssh/sshd_config
 systemctl restart sshd || { echo "KRYTYCZNY BŁĄD: Nie udało się zrestartować usługi SSHD po zmianie portu!"; exit 1; }
 echo "Port systemowy SSH zmieniony na 22222."
 
@@ -221,10 +236,7 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
 iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
 iptables -t nat -A PREROUTING -p tcp --dport 23 -j REDIRECT --to-port 2223
-
-# Zapisujemy tylko reguły NAT, reguły OUTPUT dodamy na końcu
-iptables-save > /etc/iptables/rules.v4
-echo "Reguły iptables do przekierowania ruchu na honeypot zostały ustawione."
+echo "Reguły NAT dla iptables zostały dodane."
 
 # ===================================================================
 # SEKCJA 6: KONFIGURACJA TCPDUMP JAKO USŁUGI
@@ -251,23 +263,28 @@ systemctl enable --now tcpdump-honeypot.service
 echo "Usługa tcpdump skonfigurowana i uruchomiona."
 
 # ===================================================================
-# SEKCJA 7: URUCHOMIENIE STOSU APLIKACJI
+# SEKCJA 7: URUCHOMIENIE STOSU I WZMACNIANIE BEZPIECZEŃSTWA
 # ===================================================================
 echo "--- [ETAP 7/8] Uruchamianie kontenerów Docker ---"
 /usr/local/bin/docker-compose -f $HONEYPOT_DIR/docker-compose.yml up -d
 
+# Poprawka 8: Weryfikacja, czy kontenery wstały
+echo "Oczekiwanie 15 sekund na start kontenerów..."
+sleep 15
+docker ps | grep cowrie || { echo "KRYTYCZNY BŁĄD: Kontener Cowrie nie uruchomił się poprawnie!"; exit 1; }
+echo "Kontenery Docker uruchomione poprawnie."
+
 # ===================================================================
-# SEKCJA 8: WZMACNIANIE BEZPIECZEŃSTWA (HARDENING)
+# SEKCJA 8: HARDENING I FINALIZACJA
 # ===================================================================
 echo "--- [ETAP 8/8] Wzmacnianie bezpieczeństwa: Ograniczanie ruchu wychodzącego ---"
 
-# Blokujemy tylko port 25/TCP (SMTP), aby uniemożliwić potencjalne wysyłanie spamu z naszego serwera.
-# Porty 80 i 443 pozostawiamy świadomie otwarte, aby umożliwić działanie usługi geoipupdate.
-iptables -A OUTPUT -p tcp --dport 25 -j DROP
+# Poprawka 7: Blokujemy tylko ruch zewnętrzny na porcie 25, aby nie zakłócać komunikacji lokalnej.
+iptables -A OUTPUT -p tcp --dport 25 ! -d 127.0.0.1 -j DROP
 
-# Nadpisujemy plik z regułami, dodając nową regułę blokującą.
+# Poprawka 6: Zapisujemy wszystkie reguły (NAT i OUTPUT) tylko raz, na samym końcu.
 iptables-save > /etc/iptables/rules.v4
-echo "Dodano regułę blokującą ruch wychodzący na porcie 25 (SMTP)."
+echo "Dodano regułę blokującą ruch wychodzący na porcie 25 (SMTP). Konfiguracja zakończona."
 
-echo "--- Konfiguracja serwera Honeypot zakończona pomyślnie! Sprawdź logi w /var/log/user-data.log ---"
+echo "--- Konfiguracja serwera Honeypot zakończona pomyślnie! ---"
 
