@@ -81,6 +81,13 @@ resource "aws_instance" "honeypot_instance" {
   vpc_security_group_ids      = [aws_security_group.honeypot_sg.id]
   associate_public_ip_address = true # Automatycznie przypisz publiczny adres IP.
 
+  # Jawna konfiguracja dysku root, aby zapewnić wystarczającą ilość miejsca na logi i dane.
+  root_block_device {
+    volume_size = 30 # Zwiększamy domyślne 8GB do 30GB.
+    volume_type = "gp3" # Nowoczesny i wydajny typ dysku SSD.
+    delete_on_termination = true # Dysk zostanie usunięty wraz z instancją.
+  }
+
   # To serce automatyzacji. Skrypt 'user_data.sh' zostanie wykonany przy pierwszym uruchomieniu instancji,
   # instalując i konfigurując cały stos oprogramowania (Docker, Cowrie, Grafana, etc.).
   user_data = file("user_data.sh")
