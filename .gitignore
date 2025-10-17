@@ -1,0 +1,16 @@
+# Pliki stanu Terraform - mogą zawierać wrażliwe dane
+*.tfstate
+*.tfstate.*
+
+# Pliki z sekretami i zmiennymi lokalnymi
+*.tfvars
+*.tfvars.json
+
+# Pliki z kluczami prywatnymi
+*.pem
+
+# Katalogi robocze Terraform
+.terraform/
+
+# Pliki crash log Terraform
+crash.log
