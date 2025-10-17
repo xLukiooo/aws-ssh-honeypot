@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wersja 2.0 - Architektura z automatyczną aktualizacją GeoIP
+# Wersja 2.1 - Architektura z automatyczną aktualizacją GeoIP i hardeningiem
 
 # ZATRZYMAJ SKRYPT PRZY PIERWSZYM BŁĘDZIE - kluczowe dla stabilności i debugowania.
 set -e
@@ -10,7 +10,7 @@ exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 # ===================================================================
 # SEKCJA 1: ZMIENNE KONFIGURACYJNE
 # ===================================================================
-echo "--- [ETAP 1/7] Definiowanie zmiennych konfiguracyjnych ---"
+echo "--- [ETAP 1/8] Definiowanie zmiennych konfiguracyjnych ---"
 
 # === Zmienne Użytkownika ===
 GRAFANA_ADMIN_PASSWORD="SuperTajneHaslo123!"
@@ -38,7 +38,7 @@ PCAP_DIR="$HONEYPOT_DIR/pcap_data"
 # ===================================================================
 # SEKCJA 2: PRZYGOTOWANIE SYSTEMU
 # ===================================================================
-echo "--- [ETAP 2/7] Aktualizacja systemu i instalacja podstawowych narzędzi ---"
+echo "--- [ETAP 2/8] Aktualizacja systemu i instalacja podstawowych narzędzi ---"
 apt-get update
 apt-get upgrade -y
 apt-get install -y apt-transport-https ca-certificates curl software-properties-common iptables-persistent tcpdump
@@ -53,7 +53,7 @@ mkdir -p $PCAP_DIR
 # ===================================================================
 # SEKCJA 3: INSTALACJA DOCKERA
 # ===================================================================
-echo "--- [ETAP 3/7] Instalacja silnika kontenerów Docker CE i Docker Compose ---"
+echo "--- [ETAP 3/8] Instalacja silnika kontenerów Docker CE i Docker Compose ---"
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
 add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
 apt-get update
@@ -66,18 +66,15 @@ echo "Zainstalowano Docker i Docker Compose"
 # ===================================================================
 # SEKCJA 4: GENEROWANIE PLIKÓW KONFIGURACYJNYCH
 # ===================================================================
-echo "--- [ETAP 4/7] Generowanie plików konfiguracyjnych dla stosu Docker ---"
+echo "--- [ETAP 4/8] Generowanie plików konfiguracyjnych dla stosu Docker ---"
 
-# Plik docker-compose.yml definiuje wszystkie nasze usługi, sieci i woluminy.
 cat <<EOF > $HONEYPOT_DIR/docker-compose.yml
 version: '3.7'
 
-# Definicja współdzielonego woluminu dla bazy GeoIP
 volumes:
   geoip_data:
 
 services:
-  # Usługa 1: Cowrie - właściwy honeypot.
   cowrie:
     image: ${COWRIE_IMAGE}
     container_name: cowrie
@@ -89,7 +86,6 @@ services:
       - "2223:2223"
     restart: unless-stopped
 
-  # Usługa 2: GeoIP Update - automatycznie aktualizuje bazę GeoIP.
   geoipupdate:
     image: ${GEOIPUPDATE_IMAGE}
     container_name: geoipupdate
@@ -98,11 +94,10 @@ services:
       - GEOIPUPDATE_ACCOUNT_ID=${GEOIPUPDATE_ACCOUNT_ID}
       - GEOIPUPDATE_LICENSE_KEY=${GEOIPUPDATE_LICENSE_KEY}
       - 'GEOIPUPDATE_EDITION_IDS=GeoLite2-City'
-      - GEOIPUPDATE_FREQUENCY=72 # Aktualizuj co 3 dni
+      - GEOIPUPDATE_FREQUENCY=72
     volumes:
-      - geoip_data:/usr/share/GeoIP # Zapisuje bazę do współdzielonego woluminu
+      - geoip_data:/usr/share/GeoIP
 
-  # Usługa 3: Loki - system do agregacji i przechowywania logów.
   loki:
     image: ${LOKI_IMAGE}
     container_name: loki
@@ -113,20 +108,18 @@ services:
       - "3100:3100"
     restart: unless-stopped
 
-  # Usługa 4: Promtail - agent zbierający logi.
   promtail:
     image: ${PROMTAIL_IMAGE}
     container_name: promtail
     depends_on:
-      - geoipupdate # Upewnij się, że wolumin jest gotowy
+      - geoipupdate
     volumes:
       - $COWRIE_DIR/var/lib:/var/log/cowrie:ro
       - $PROMTAIL_DIR/promtail.yml:/etc/promtail/promtail.yml:ro
-      - geoip_data:/usr/share/GeoIP:ro # Odczytuje bazę ze współdzielonego woluminu
+      - geoip_data:/usr/share/GeoIP:ro
     command: -config.file=/etc/promtail/promtail.yml
     restart: unless-stopped
 
-  # Usługa 5: Grafana - narzędzie do wizualizacji.
   grafana:
     image: ${GRAFANA_IMAGE}
     container_name: grafana
@@ -170,7 +163,6 @@ storage_config:
     directory: /tmp/loki/chunks
 EOF
 
-# Konfiguracja Promtail z zaawansowanym potokiem i nową ścieżką do bazy GeoIP.
 cat <<EOF > $PROMTAIL_DIR/promtail.yml
 server:
   http_listen_port: 9080
@@ -199,7 +191,7 @@ scrape_configs:
       source: timestamp
       format: RFC3339Nano
   - geoip:
-      db: /usr/share/GeoIP/GeoLite2-City.mmdb # Nowa ścieżka do bazy w woluminie
+      db: /usr/share/GeoIP/GeoLite2-City.mmdb
       source: src_ip
 EOF
 
@@ -217,9 +209,9 @@ EOF
 echo "Pliki konfiguracyjne wygenerowane."
 
 # ===================================================================
-# SEKCJA 5: KONFIGURACJA SIECI I ZABEZPIECZEŃ
+# SEKCJA 5: KONFIGURACJA SIECI (PRZEKIEROWANIA)
 # ===================================================================
-echo "--- [ETAP 5/7] Konfiguracja sieci i zmiana portu SSH ---"
+echo "--- [ETAP 5/8] Konfiguracja sieci i zmiana portu SSH ---"
 sed -i 's/^#\?Port 22/Port 22222/' /etc/ssh/sshd_config
 systemctl restart sshd || { echo "KRYTYCZNY BŁĄD: Nie udało się zrestartować usługi SSHD po zmianie portu!"; exit 1; }
 echo "Port systemowy SSH zmieniony na 22222."
@@ -229,13 +221,15 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
 iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
 iptables -t nat -A PREROUTING -p tcp --dport 23 -j REDIRECT --to-port 2223
+
+# Zapisujemy tylko reguły NAT, reguły OUTPUT dodamy na końcu
 iptables-save > /etc/iptables/rules.v4
 echo "Reguły iptables do przekierowania ruchu na honeypot zostały ustawione."
 
 # ===================================================================
 # SEKCJA 6: KONFIGURACJA TCPDUMP JAKO USŁUGI
 # ===================================================================
-echo "--- [ETAP 6/7] Konfiguracja tcpdump jako usługi systemd ---"
+echo "--- [ETAP 6/8] Konfiguracja tcpdump jako usługi systemd ---"
 cat <<EOF > /etc/systemd/system/tcpdump-honeypot.service
 [Unit]
 Description=TCPDump Honeypot Packet Capture
@@ -259,8 +253,21 @@ echo "Usługa tcpdump skonfigurowana i uruchomiona."
 # ===================================================================
 # SEKCJA 7: URUCHOMIENIE STOSU APLIKACJI
 # ===================================================================
-echo "--- [ETAP 7/7] Uruchamianie kontenerów Docker ---"
+echo "--- [ETAP 7/8] Uruchamianie kontenerów Docker ---"
 /usr/local/bin/docker-compose -f $HONEYPOT_DIR/docker-compose.yml up -d
+
+# ===================================================================
+# SEKCJA 8: WZMACNIANIE BEZPIECZEŃSTWA (HARDENING)
+# ===================================================================
+echo "--- [ETAP 8/8] Wzmacnianie bezpieczeństwa: Ograniczanie ruchu wychodzącego ---"
+
+# Blokujemy tylko port 25/TCP (SMTP), aby uniemożliwić potencjalne wysyłanie spamu z naszego serwera.
+# Porty 80 i 443 pozostawiamy świadomie otwarte, aby umożliwić działanie usługi geoipupdate.
+iptables -A OUTPUT -p tcp --dport 25 -j DROP
+
+# Nadpisujemy plik z regułami, dodając nową regułę blokującą.
+iptables-save > /etc/iptables/rules.v4
+echo "Dodano regułę blokującą ruch wychodzący na porcie 25 (SMTP)."
 
 echo "--- Konfiguracja serwera Honeypot zakończona pomyślnie! Sprawdź logi w /var/log/user-data.log ---"
 
