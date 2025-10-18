@@ -1,100 +1,81 @@
 #!/bin/bash
-# Wersja 4.0 - Finalna wersja z hardeningiem i poprawną obsługą konfiguracji Cowrie
+# Wersja 5.0 - VictoriaLogs zamiast Loki + GeoIP
 
 set -e
-
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-# ===================================================================
-# SEKCJA 1: ZMIENNE KONFIGURACYJNE
-# ===================================================================
-echo "--- [ETAP 1/9] Definiowanie zmiennych konfiguracyjnych ---"
-
-# === Zmienne Użytkownika ===
+# KONFIGURACJA ZMIENNYCH
 GRAFANA_ADMIN_PASSWORD="SuperTajneHaslo123!"
 GEOIPUPDATE_ACCOUNT_ID="TWOJE_ID_KONTA_MAXMIND"
 GEOIPUPDATE_LICENSE_KEY="TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
-
-# === Wersje Oprogramowania ===
 DOCKER_COMPOSE_VERSION="v2.23.0"
 COWRIE_IMAGE="cowrie/cowrie:latest"
-LOKI_IMAGE="grafana/loki:2.9.2"
+VICTORIALOGS_IMAGE="victoriametrics/victoria-logs:latest"
 PROMTAIL_IMAGE="grafana/promtail:2.9.2"
 GRAFANA_IMAGE="grafana/grafana:10.1.5"
 GEOIPUPDATE_IMAGE="ghcr.io/maxmind/geoipupdate:latest"
-
-# === Ścieżki ===
 HONEYPOT_DIR="/opt/honeypot"
-COWRIE_DIR="$HONEYPOT_DIR/cowrie"
 PROMTAIL_DIR="$HONEYPOT_DIR/promtail"
-LOKI_DIR="$HONEYPOT_DIR/loki"
+VICTORIALOGS_DIR="$HONEYPOT_DIR/victorialogs"
 GRAFANA_DIR="$HONEYPOT_DIR/grafana"
 PCAP_DIR="$HONEYPOT_DIR/pcap_data"
 
-# ===================================================================
-# SEKCJA 2: PRZYGOTOWANIE SYSTEMU
-# ===================================================================
-echo "--- [ETAP 2/9] Aktualizacja systemu i instalacja podstawowych narzędzi ---"
+echo "=== SEKCJA 2: Przygotowanie systemu ==="
 apt-get update
 apt-get upgrade -y
-apt-get install -y apt-transport-https ca-certificates curl software-properties-common iptables-persistent tcpdump
+# Pre-konfiguruj odpowiedzi dla iptables-persistent (aby uniknąć interaktywnego promptu)
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
-echo "--- Tworzenie struktury katalogów dla konfiguracji ---"
-mkdir -p $COWRIE_DIR/etc $COWRIE_DIR/var/lib
+# Instalacja pakietów w trybie nieinteraktywnym
+DEBIAN_FRONTEND=noninteractive apt-get install -y apt-transport-https ca-certificates curl software-properties-common iptables-persistent tcpdump
+
 mkdir -p $PROMTAIL_DIR
-mkdir -p $LOKI_DIR
+mkdir -p $VICTORIALOGS_DIR
 mkdir -p $GRAFANA_DIR/provisioning/datasources $GRAFANA_DIR/data
 mkdir -p $PCAP_DIR
 
-# ===================================================================
-# SEKCJA 3: INSTALACJA DOCKERA
-# ===================================================================
-echo "--- [ETAP 3/9] Instalacja silnika kontenerów Docker CE i Docker Compose ---"
+echo "=== SEKCJA 3: Instalacja Dockera ==="
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io
-
 curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
-echo "Zainstalowano Docker i Docker Compose"
 
-# ===================================================================
-# SEKCJA 4: GENEROWANIE PLIKÓW KONFIGURACYJNYCH
-# ===================================================================
-echo "--- [ETAP 4/9] Generowanie plików konfiguracyjnych dla stosu Docker ---"
+echo "=== SEKCJA 4: Generowanie plików konfiguracyjnych ==="
 
 cat <<EOF > $HONEYPOT_DIR/docker-compose.yml
 version: '3.7'
 
 volumes:
   geoip_data:
+  cowrie-log:
+  cowrie-data:
+  victorialogs-data:
 
 services:
   cowrie:
-    image: ${COWRIE_IMAGE}
+    image: cowrie/cowrie:latest
     container_name: cowrie
     volumes:
-      - $COWRIE_DIR/etc:/cowrie/etc
-      - $COWRIE_DIR/var/lib:/cowrie/var/lib
+      - cowrie-log:/cowrie/cowrie-git/var/log/cowrie
+      - cowrie-data:/cowrie/cowrie-git/var/lib/cowrie
     ports:
-      - "2222:2222"
-      - "2223:2223"
+      - "2222:2222/tcp"
+      - "2223:2223/tcp"
     restart: unless-stopped
 
   geoipupdate:
-    image: ${GEOIPUPDATE_IMAGE}
+    image: ghcr.io/maxmind/geoipupdate:latest
     container_name: geoipupdate
     restart: always
     environment:
       - GEOIPUPDATE_ACCOUNT_ID=${GEOIPUPDATE_ACCOUNT_ID}
       - GEOIPUPDATE_LICENSE_KEY=${GEOIPUPDATE_LICENSE_KEY}
-      - 'GEOIPUPDATE_EDITION_IDS=GeoLite2-City'
+      - GEOIPUPDATE_EDITION_IDS=GeoLite2-ASN GeoLite2-City GeoLite2-Country
       - GEOIPUPDATE_FREQUENCY=72
     volumes:
       - geoip_data:/usr/share/GeoIP
@@ -104,192 +85,124 @@ services:
       timeout: 10s
       retries: 5
 
-  loki:
-    image: ${LOKI_IMAGE}
-    container_name: loki
+  victorialogs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: victorialogs
     volumes:
-      - $LOKI_DIR:/etc/loki
-    command: -config.file=/etc/loki/loki-config.yml
+      - victorialogs-data:/victoria-logs-data
     ports:
-      - "3100:3100"
+      - "9428:9428"
+    command:
+      - "-storageDataPath=/victoria-logs-data"
+      - "-httpListenAddr=:9428"
     restart: unless-stopped
 
   promtail:
-    image: ${PROMTAIL_IMAGE}
+    image: grafana/promtail:2.9.2
     container_name: promtail
     depends_on:
       geoipupdate:
         condition: service_healthy
     volumes:
-      - $COWRIE_DIR/var/lib/cowrie/log:/var/log/cowrie:ro
-      - $PROMTAIL_DIR/promtail.yml:/etc/promtail/promtail.yml:ro
+      - cowrie-log:/var/log/cowrie:ro
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
       - geoip_data:/usr/share/GeoIP:ro
     command: -config.file=/etc/promtail/promtail.yml
     restart: unless-stopped
 
   grafana:
-    image: ${GRAFANA_IMAGE}
+    image: grafana/grafana:10.1.5
     container_name: grafana
     volumes:
-      - $GRAFANA_DIR/data:/var/lib/grafana
-      - $GRAFANA_DIR/provisioning:/etc/grafana/provisioning
+      - ./grafana/data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_INSTALL_PLUGINS=victoriametrics-logs-datasource
     ports:
       - "3000:3000"
     restart: unless-stopped
 EOF
 
-# ... (reszta plików konfiguracyjnych bez zmian)
+echo "docker-compose.yml wygenerowany."
 
-cat <<EOF > $LOKI_DIR/loki-config.yml
-auth_enabled: false
-server:
-  http_listen_port: 3100
-ingester:
-  lifecycler:
-    address: 127.0.0.1
-    ring:
-      kvstore:
-        store: inmemory
-      replication_factor: 1
-    final_sleep: 0s
-  chunk_idle_period: 5m
-  chunk_retain_period: 1m
-schema_config:
-  configs:
-    - from: 2020-05-15
-      store: boltdb
-      object_store: filesystem
-      schema: v11
-      index:
-        prefix: index_
-        period: 168h
-storage_config:
-  boltdb:
-    directory: /tmp/loki/index
-  filesystem:
-    directory: /tmp/loki/chunks
-EOF
-
+# KONFIG PROMTAIL z GeoIP
 cat <<EOF > $PROMTAIL_DIR/promtail.yml
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
+  log_level: warn
 
 positions:
   filename: /tmp/positions.yaml
 
 clients:
-  - url: http://loki:3100/loki/api/v1/push
+  - url: http://victorialogs:9428/insert/loki/api/v1/push?_msg_field=message&_stream_fields=instance,job
 
 scrape_configs:
-- job_name: cowrie
-  static_configs:
-  - targets:
-      - localhost
-    labels:
-      job: cowrie
-      __path__: /var/log/cowrie/cowrie.json*
-  pipeline_stages:
-  - json:
-      expressions:
-        timestamp: timestamp
-        src_ip: src_ip
-  - timestamp:
-      source: timestamp
-      format: RFC3339Nano
-  - geoip:
-      db: /usr/share/GeoIP/GeoLite2-City.mmdb
-      source: src_ip
+  - job_name: cowrie
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: cowrie
+          __path__: /var/log/cowrie/*.json
+          instance: cowrie-promtail
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            src_ip: src_ip
+            session: session
+            message: message
+            eventid: eventid
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      - geoip:
+          db: /usr/share/GeoIP/GeoLite2-City.mmdb
+          source: src_ip
+          db_type: "city"
+          output:
+            geoip_country: country.iso_code
+            geoip_city: city.names.en
+            geoip_latitude: location.latitude
+            geoip_longitude: location.longitude
+      - labels:
+          src_ip:
+          session:
+          geoip_country:
+          geoip_city:
+          geoip_latitude:
+          geoip_longitude:
 EOF
 
-cat <<EOF > $GRAFANA_DIR/provisioning/datasources/loki.yml
+# KONFIG GRAFANA dla VictoriaLogs
+cat <<EOF > $GRAFANA_DIR/provisioning/datasources/victorialogs.yml
 apiVersion: 1
 datasources:
-- name: Loki
-  type: loki
+- name: VictoriaLogs
+  type: victoriametrics-logs-datasource
   access: proxy
-  url: http://loki:3100
+  url: http://victorialogs:9428
   isDefault: true
   jsonData:
     maxLines: 1000
+  editable: true
 EOF
-echo "Pliki konfiguracyjne wygenerowane."
 
-# ===================================================================
-# SEKCJA 5: KONFIGURACJA I HARDENING COWRIE
-# ===================================================================
-echo "--- [ETAP 5/9] Konfiguracja limitów i czyszczenia plików Cowrie ---"
-
-# Krok 1: Uruchom na chwilę Cowrie, aby wygenerowało domyślny plik konfiguracyjny
-echo "Uruchamianie Cowrie w celu wygenerowania pliku konfiguracyjnego..."
-/usr/local/bin/docker-compose -f $HONEYPOT_DIR/docker-compose.yml up -d cowrie
-sleep 15 # Daj czas kontenerowi na stworzenie plików
-
-# Krok 2: Edytuj plik konfiguracyjny, dodając limit rozmiaru pobieranych plików
-COWRIE_CONFIG_FILE="$COWRIE_DIR/etc/cowrie.cfg"
-if [ -f "$COWRIE_CONFIG_FILE" ]; then
-    echo "Edytowanie pliku $COWRIE_CONFIG_FILE..."
-    if grep -q "^[downloads]" "$COWRIE_CONFIG_FILE"; then
-        sed -i '/^[downloads]/,/^[s]/ s/^download_max_size\s*=.*/download_max_size = 5242880/' "$COWRIE_CONFIG_FILE"
-    else
-        echo -e "\n[downloads]\ndownload_max_size = 5242880" >> "$COWRIE_CONFIG_FILE"
-    fi
-else
-    echo "KRYTYCZNY BŁĄD: Plik konfiguracyjny Cowrie nie został znaleziony!"
-    exit 1
-fi
-
-# Krok 3: Zatrzymaj tymczasowy kontener Cowrie
-/usr/local/bin/docker-compose -f $HONEYPOT_DIR/docker-compose.yml stop cowrie
-
-# Krok 4: Stwórz skrypt do czyszczenia katalogu z pobranym malware
-DOWNLOAD_DIR="$COWRIE_DIR/var/lib/cowrie/downloads"
-CLEAN_SCRIPT="/usr/local/bin/cowrie_download_cleanup.sh"
-cat << EOF > "$CLEAN_SCRIPT"
-#!/bin/bash
-DOWNLOAD_DIR="$DOWNLOAD_DIR"
-MAX_FILES=100
-
-if [ -d "\$DOWNLOAD_DIR" ]; then
-  find "\$DOWNLOAD_DIR" -type f -size +10M -delete
-  TOTAL=\$(ls -1t "\$DOWNLOAD_DIR" | wc -l)
-  if [ "\$TOTAL" -gt "\$MAX_FILES" ]; then
-    DELETE=\$(ls -1t "\$DOWNLOAD_DIR" | tail -n +\$((MAX_FILES+1)))
-    for f in \$DELETE; do
-      rm -f "\$DOWNLOAD_DIR/\$f"
-    done
-  fi
-fi
-EOF
-chmod +x "$CLEAN_SCRIPT"
-
-# Krok 5: Dodaj zadanie do crona, aby skrypt uruchamiał się co godzinę
-echo "0 * * * * root $CLEAN_SCRIPT" >> /etc/crontab
-
-echo "Limity na rozmiar/ilość pobranych plików malware na Cowrie WŁĄCZONE."
-
-# ===================================================================
-# SEKCJA 6: KONFIGURACJA SIECI (PRZEKIEROWANIA)
-# ===================================================================
-echo "--- [ETAP 6/9] Konfiguracja sieci i zmiana portu SSH ---"
+# ZMIANA PORTU SSH
 sed -i '/^#*Port /d' /etc/ssh/sshd_config
 echo "Port 22222" >> /etc/ssh/sshd_config
 systemctl restart sshd || { echo "KRYTYCZNY BŁĄD: Nie udało się zrestartować usługi SSHD po zmianie portu!"; exit 1; }
-echo "Port systemowy SSH zmieniony na 22222."
 
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
 iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
 iptables -t nat -A PREROUTING -p tcp --dport 23 -j REDIRECT --to-port 2223
-echo "Reguły NAT dla iptables zostały dodane."
 
-# ===================================================================
-# SEKCJA 7: KONFIGURACJA TCPDUMP JAKO USŁUGI
-# ===================================================================
-echo "--- [ETAP 7/9] Konfiguracja tcpdump jako usługi systemd ---"
+iptables -t nat -L PREROUTING -n -v
+
 cat <<EOF > /etc/systemd/system/tcpdump-honeypot.service
 [Unit]
 Description=TCPDump Honeypot Packet Capture
@@ -297,7 +210,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/tcpdump -i any -w $PCAP_DIR/capture_%%Y-%%m-%%d_%%H-%%M-%%S.pcap -G 3600 -C 100 -Z root 'port 22 or port 23'
+ExecStart=/usr/bin/tcpdump -i any -w /opt/honeypot/pcap_data/capture.pcap -G 3600 -C 100 -Z root port 22 or port 23
 Restart=always
 RestartSec=5
 CPUQuota=50%
@@ -307,29 +220,89 @@ MemoryMax=500M
 WantedBy=multi-user.target
 EOF
 
+systemctl daemon-reload
 systemctl enable --now tcpdump-honeypot.service
-echo "Usługa tcpdump skonfigurowana i uruchomiona."
 
-# ===================================================================
-# SEKCJA 8: URUCHOMIENIE FINALNEGO STOSU
-# ===================================================================
-echo "--- [ETAP 8/9] Uruchamianie finalnego stosu kontenerów Docker ---"
-/usr/local/bin/docker-compose -f $HONEYPOT_DIR/docker-compose.yml up -d
+# SKRYPT CZYSZCZĄCY DANE COWRIE
+CLEAN_SCRIPT="/usr/local/bin/cowrie_cleanup.sh"
+cat << 'CLEANUP_EOF' > "$CLEAN_SCRIPT"
+#!/bin/bash
+# Czyszczenie starych plików pobranych przez Cowrie
+VOLUME_NAME="honeypot_cowrie-data"
+docker run --rm -v ${VOLUME_NAME}:/data alpine sh -c '
+  find /data/downloads -type f -size +10M -delete 2>/dev/null || true
+  TOTAL=$(find /data/downloads -type f 2>/dev/null | wc -l)
+  if [ "$TOTAL" -gt 100 ]; then
+    find /data/downloads -type f -printf "%T@ %p\n" | sort -n | head -n -100 | cut -d" " -f2- | xargs rm -f
+  fi
+'
+CLEANUP_EOF
+chmod +x "$CLEAN_SCRIPT"
+echo "0 2 * * * root $CLEAN_SCRIPT" >> /etc/crontab
 
-echo "Oczekiwanie 15 sekund na start kontenerów..."
-sleep 15
+chown -R 472:472 $GRAFANA_DIR/data
+chown -R 472:472 $GRAFANA_DIR/provisioning
+chown -R root:root $PROMTAIL_DIR
+chown -R root:root $PCAP_DIR
+chmod -R 755 $HONEYPOT_DIR
+chmod -R 755 $PROMTAIL_DIR
+chmod -R 755 $VICTORIALOGS_DIR
+
+sleep 2
+cd $HONEYPOT_DIR
+docker pull $COWRIE_IMAGE
+docker pull $VICTORIALOGS_IMAGE
+docker pull $PROMTAIL_IMAGE
+docker pull $GRAFANA_IMAGE
+docker pull $GEOIPUPDATE_IMAGE
+
+/usr/local/bin/docker-compose down 2>/dev/null || true
+sleep 3
+/usr/local/bin/docker-compose up -d
+sleep 20
+
 docker ps | grep cowrie || { echo "KRYTYCZNY BŁĄD: Kontener Cowrie nie uruchomił się poprawnie!"; exit 1; }
-echo "Kontenery Docker uruchomione poprawnie."
+echo "Kontenery uruchomione pomyślnie:"
+docker ps
 
-# ===================================================================
-# SEKCJA 9: HARDENING I FINALIZACJA
-# ===================================================================
-echo "--- [ETAP 9/9] Wzmacnianie bezpieczeństwa i finalizacja konfiguracji ---"
+echo "=== Sprawdzanie logów Cowrie ==="
+docker logs cowrie --tail 30
+
+echo "=== Sprawdzanie logów Promtail ==="
+docker logs promtail --tail 20
+
+echo "=== Sprawdzanie logów VictoriaLogs ==="
+docker logs victorialogs --tail 20
 
 iptables -A OUTPUT -p tcp --dport 25 ! -d 127.0.0.1 -j DROP
-
 iptables-save > /etc/iptables/rules.v4
-echo "Dodano regułę blokującą ruch wychodzący na porcie 25 (SMTP)."
 
-echo "--- Konfiguracja serwera Honeypot zakończona pomyślnie! ---"
-
+echo "========================================="
+echo "=== KONFIGURACJA HONEYPOT ZAKOŃCZONA ==="
+echo "========================================="
+echo ""
+echo "Dostęp do usług:"
+echo "  - Grafana: http://<IP>:3000 (admin / $GRAFANA_ADMIN_PASSWORD)"
+echo "  - VictoriaLogs: http://<IP>:9428"
+echo "  - SSH Honeypot: port 22 => 2222"
+echo "  - Telnet Honeypot: port 23 => 2223"
+echo "  - Prawdziwy SSH: port 22222"
+echo "  - PCAP: $PCAP_DIR"
+echo ""
+echo "WAŻNE: Aby wygenerować logi, przetestuj honeypot:"
+echo "  ssh root@192.168.10.90 -p 22 (będzie przekierowane na 2222)"
+echo "  lub: ssh root@localhost -p 2222"
+echo "  Domyślne hasła: root, password, 123456"
+echo ""
+echo "Sprawdzenie logów Cowrie:"
+echo "  sudo docker logs cowrie"
+echo "  sudo docker cp cowrie:/cowrie/cowrie-git/var/log/cowrie /tmp/cowrie_logs"
+echo "  ls -lh /tmp/cowrie_logs/"
+echo "  cat /tmp/cowrie_logs/cowrie.json | tail -20"
+echo ""
+echo "Weryfikacja sesji TTY z honeypota:"
+echo "  sudo docker cp cowrie:/cowrie/cowrie-git/var/lib/cowrie/tty /tmp/cowrie_tty"
+echo "  ls -lh /tmp/cowrie_tty/"
+echo ""
+echo "UWAGA: W Grafanie musisz zainstalować plugin VictoriaLogs datasource"
+echo "  lub dodać go ręcznie z: https://grafana.com/grafana/plugins/victoriametrics-logs-datasource/"
