@@ -1,35 +1,28 @@
 # ===================================================================
-# Dostawca Chmury i Region
-# Definiuje, że używamy AWS jako naszej platformy chmurowej.
-# Region 'us-east-1' został wybrany jako główny region dla tego projektu.
+# Provider Configuration
 # ===================================================================
 provider "aws" {
   region = "us-east-1"
 }
 
+
 # ===================================================================
-# Dynamiczne Pobieranie Adresu IP Użytkownika
-# Ten blok pobiera publiczny adres IP maszyny, z której uruchamiany jest Terraform.
-# Jest to kluczowe dla automatycznego skonfigurowania reguły firewalla,
-# która zezwala na dostęp do zarządzania serwerem (port 22222) tylko z Twojej sieci.
+# Dynamiczne pobieranie IP administratora
 # ===================================================================
 data "http" "my_ip" {
   url = "https://ipv4.icanhazip.com"
 }
 
+
 # ===================================================================
-# Grupa Bezpieczeństwa (Wirtualny Firewall)
-# Ten zasób definiuje reguły sieciowe dla naszej instancji EC2.
-# Działa jak firewall, kontrolując ruch przychodzący i wychodzący.
+# Security Group - Firewall dla honeypota
+# Port 22 otwarty jako pułapka, ruch wychodzący ograniczony
 # ===================================================================
 resource "aws_security_group" "honeypot_sg" {
   name        = "honeypot-sg"
   description = "Reguły firewalla dla projektu Honeypot BSK2"
 
-  # --- Reguły Ruchu Przychodzącego (Ingress) ---
-
-  # Port 22 (SSH) jest celowo otwarty na cały świat (0.0.0.0/0).
-  # To jest port-pułapka, na który będą kierowane ataki na SSH, przechwytywane przez Cowrie.
+  # Port 22 - SSH honeypot (pułapka)
   ingress {
     from_port   = 22
     to_port     = 22
@@ -38,97 +31,163 @@ resource "aws_security_group" "honeypot_sg" {
     description = "Honeypot SSH (Cowrie)"
   }
 
-  # Port 23 (Telnet) również jest otwarty na świat, działając jako pułapka dla ataków Telnet.
-  ingress {
-    from_port   = 23
-    to_port     = 23
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Honeypot Telnet (Cowrie)"
-  }
-
-  # Port 22222 to port do zarządzania serwerem (prawdziwy serwer SSH).
-  # Dostęp jest ograniczony wyłącznie do Twojego adresu IP, co chroni serwer przed nieautoryzowanym dostępem.
+  # Port 22222 - SSH administracyjny (tylko z Twojego IP)
   ingress {
     from_port   = 22222
     to_port     = 22222
     protocol    = "tcp"
-    cidr_blocks = ["${chomp(data.http.my_ip.body)}/32"]
-    description = "Zarządzanie serwerem (SSH)"
+    cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
+    description = "Zarzadzanie serwerem (SSH)"
   }
 
-  # --- Reguły Ruchu Wychodzącego (Egress) ---
-
-  # Zezwala instancji na nieograniczony dostęp do internetu.
-  # Jest to wymagane, aby serwer mógł pobrać aktualizacje, obrazy Docker, bazę GeoIP itp.
+  # Ruch wychodzący - tylko niezbędne porty (HTTP, HTTPS, DNS)
+  # Port 25 (SMTP) celowo pominięty - blokada wysyłania emaili
+  
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-    description = "Zezwolenie na cały ruch wychodzący"
+    description = "HTTP dla aktualizacji"
+  }
+
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS dla Docker i aktualizacji"
+  }
+
+  egress {
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "DNS"
+  }
+
+  tags = {
+    Name = "honeypot-sg-secure"
   }
 }
 
+
 # ===================================================================
-# Instancja Serwera (EC2)
-# To jest główny zasób projektu - wirtualny serwer, na którym będzie działał nasz honeypot.
+# CloudWatch Log Group - przechowywanie logów przez 30 dni
+# ===================================================================
+resource "aws_cloudwatch_log_group" "honeypot_logs" {
+  name              = "/aws/ec2/honeypot-bsk2"
+  retention_in_days = 30
+
+  tags = {
+    Name        = "Honeypot-Logs"
+    Environment = "Security-Research"
+  }
+}
+
+
+# ===================================================================
+# IAM Role - pozwala instancji wysyłać logi do CloudWatch
+# ===================================================================
+resource "aws_iam_role" "honeypot_cloudwatch_role" {
+  name = "honeypot-cloudwatch-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = {
+    Name = "Honeypot-CloudWatch-Role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_logs_policy" {
+  role       = aws_iam_role.honeypot_cloudwatch_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_instance_profile" "honeypot_profile" {
+  name = "honeypot-instance-profile"
+  role = aws_iam_role.honeypot_cloudwatch_role.name
+}
+
+
+# ===================================================================
+# EC2 Instance - główny serwer honeypota
+# t2.micro (Free Tier), dysk 30GB zaszyfrowany, Ubuntu 22.04 LTS
 # ===================================================================
 resource "aws_instance" "honeypot_instance" {
-  ami                         = "ami-0360c520857e3138f" # Użycie konkretnego obrazu Ubuntu 22.04 LTS
-  instance_type               = "t2.micro" # Mała, tania instancja, wystarczająca dla tego projektu.
-  key_name                    = "projekt-bsk2-key" # Nazwa pary kluczy, którą musisz wcześniej stworzyć w konsoli AWS.
+  ami                         = "ami-0360c520857e3138f"
+  instance_type               = "t2.micro"
+  key_name                    = "projekt-bsk2-key"
   vpc_security_group_ids      = [aws_security_group.honeypot_sg.id]
-  associate_public_ip_address = true # Automatycznie przypisz publiczny adres IP.
+  associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.honeypot_profile.name
 
-  # Jawna konfiguracja dysku root, aby zapewnić wystarczającą ilość miejsca na logi i dane.
+  # Dysk zaszyfrowany, 30GB, gp3
   root_block_device {
-    volume_size = 30 # Zwiększamy domyślne 8GB do 30GB.
-    volume_type = "gp3" # Nowoczesny i wydajny typ dysku SSD.
-    delete_on_termination = true # Dysk zostanie usunięty wraz z instancją.
+    volume_size           = 30
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
   }
 
-  # To serce automatyzacji. Skrypt 'user_data.sh' zostanie wykonany przy pierwszym uruchomieniu instancji,
-  # instalując i konfigurując cały stos oprogramowania (Docker, Cowrie, Grafana, etc.).
+  # Skrypt instalacyjny z konfiguracją honeypota
   user_data = templatefile("user_data.tftpl", {
     grafana_admin_password  = var.grafana_admin_password
     geoipupdate_account_id  = var.geoipupdate_account_id
     geoipupdate_license_key = var.geoipupdate_license_key
+    docker_compose_version  = var.docker_compose_version
   })
 
+  # Tagi dla dokumentacji i zgodności
   tags = {
-    Name = "Honeypot-BSK2"
+    Name        = "Honeypot-BSK2"
+    Purpose     = "Security Research Honeypot"
+    Project     = "Cybersecurity Education"
+    Environment = "Isolated"
   }
 }
 
+
 # ===================================================================
-# Wyjścia (Outputs)
-# Te bloki wyświetlają przydatne informacje po zakończeniu działania Terraform.
-# Dzięki nim nie musisz ręcznie szukać IP serwera czy składać komend do połączenia.
+# Outputs - wyświetlane po terraform apply
 # ===================================================================
 
-# Wyświetla publiczny adres IP serwera.
 output "honeypot_public_ip" {
-  value = aws_instance.honeypot_instance.public_ip
+  value       = aws_instance.honeypot_instance.public_ip
+  description = "Publiczny IP honeypota"
 }
 
-# Wyświetla gotową komendę do zalogowania się na serwer w celach administracyjnych.
 output "ssh_management_command" {
-  value = "ssh -i projekt-bsk2-key.pem -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
+  value       = "ssh -i projekt-bsk2-key.pem -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
+  description = "Komenda SSH do zarządzania"
 }
 
-# Wyświetla gotową komendę do stworzenia tunelu SSH, niezbędnego do bezpiecznego połączenia z Grafaną.
 output "grafana_tunnel_command" {
-  value = "ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
+  value       = "ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
+  description = "Tunel SSH do Grafany"
 }
 
-# Wyświetla gotową komendę do pobrania wszystkich przechwyconych plików .pcap.
 output "tcpdump_download_command" {
-  value = "scp -i projekt-bsk2-key.pem -P 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}:/opt/honeypot/pcap_data/capture*.pcap ."
+  value       = "scp -i projekt-bsk2-key.pem -P 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}:/opt/honeypot/pcap_data/capture*.pcap ."
+  description = "Pobranie plików PCAP"
 }
 
-# Wyświetla przykładową komendę, jakiej użyłby atakujący, aby połączyć się z honeypotem.
 output "honeypot_ssh_test_command" {
-  description = "Komenda do przetestowania połączenia z honeypotem Cowrie (jako atakujący)"
   value       = "ssh root@${aws_instance.honeypot_instance.public_ip}"
+  description = "Test honeypota jako atakujący"
+}
+
+output "cloudwatch_log_group" {
+  value       = aws_cloudwatch_log_group.honeypot_logs.name
+  description = "Nazwa grupy logów CloudWatch"
 }

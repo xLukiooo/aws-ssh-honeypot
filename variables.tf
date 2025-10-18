@@ -15,3 +15,9 @@ variable "geoipupdate_license_key" {
   type        = string
   sensitive   = true
 }
+
+variable "docker_compose_version" {
+  description = "Docker Compose version to install."
+  type        = string
+  default     = "v2.23.0"
+}
