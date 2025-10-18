@@ -14,7 +14,7 @@ provider "aws" {
 # która zezwala na dostęp do zarządzania serwerem (port 22222) tylko z Twojej sieci.
 # ===================================================================
 data "http" "my_ip" {
-  url = "http://ipv4.icanhazip.com"
+  url = "https://ipv4.icanhazip.com"
 }
 
 # ===================================================================
@@ -90,7 +90,11 @@ resource "aws_instance" "honeypot_instance" {
 
   # To serce automatyzacji. Skrypt 'user_data.sh' zostanie wykonany przy pierwszym uruchomieniu instancji,
   # instalując i konfigurując cały stos oprogramowania (Docker, Cowrie, Grafana, etc.).
-  user_data = file("user_data.sh")
+  user_data = templatefile("user_data.tftpl", {
+    grafana_admin_password  = var.grafana_admin_password
+    geoipupdate_account_id  = var.geoipupdate_account_id
+    geoipupdate_license_key = var.geoipupdate_license_key
+  })
 
   tags = {
     Name = "Honeypot-BSK2"

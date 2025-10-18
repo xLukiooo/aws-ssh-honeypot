@@ -4,95 +4,89 @@
 
 Celem tego projektu jest stworzenie w pełni zautomatyzowanego, gotowego do wdrożenia systemu honeypot na platformie AWS. System wykorzystuje **Cowrie** do emulacji usług SSH i Telnet, aby przyciągać, przechwytywać i analizować próby nieautoryzowanego dostępu.
 
-Cała infrastruktura jest definiowana jako kod (IaC) za pomocą **Terraform**, a konfiguracja serwera odbywa się automatycznie przez skrypt `user_data`. Stos oprogramowania do analizy (Loki, Promtail, Grafana) działa w kontenerach **Docker**, zapewniając izolację i łatwość zarządzania.
+Cała infrastruktura jest definiowana jako kod (IaC) za pomocą **Terraform**, a konfiguracja serwera odbywa się automatycznie. Stos oprogramowania do analizy (**VictoriaLogs**, Promtail, Grafana) działa w kontenerach **Docker**, zapewniając izolację i łatwość zarządzania. Sekrety (hasła, klucze API) są zarządzane w bezpieczny sposób za pomocą zmiennych Terraform.
 
 Projekt jest przeznaczony do celów edukacyjnych i badawczych, umożliwiając obserwację i analizę wektorów ataków w czasie rzeczywistym.
 
 ## 2. Kluczowe Cechy
 
-- **Pełna Automatyzacja:** Wdrożenie całego systemu za pomocą jednego polecenia `terraform apply`.
+- **Pełna Automatyzacja:** Wdrożenie całego systemu za pomocą polecenia `terraform apply`.
 - **Infrastruktura jako Kod (IaC):** Powtarzalne i wersjonowane środowisko dzięki Terraform.
-- **Stos Dockerowy:** Wszystkie usługi (Cowrie, Loki, Promtail, Grafana) są skonteneryzowane, co ułatwia zarządzanie i izoluje zależności.
+- **Bezpieczne Zarządzanie Sekretami:** Hasła i klucze API nie są przechowywane w kodzie, lecz wstrzykiwane w bezpieczny sposób przez Terraform.
+- **Stos Dockerowy:** Wszystkie usługi (Cowrie, **VictoriaLogs**, Promtail, Grafana) są skonteneryzowane.
 - **Analiza w Czasie Rzeczywistym:** Interaktywny dashboard w Grafanie do wizualizacji danych o atakach.
-- **Geolokalizacja Ataków:** Automatyczne wzbogacanie logów o dane geograficzne na podstawie adresu IP atakującego (dzięki Promtail i bazie GeoLite2).
-- **Głęboka Analiza Pakietów:** Usługa `tcpdump` w tle przechwytuje cały ruch na portach honeypota do późniejszej analizy w Wireshark.
-- **Bezpieczeństwo:** Dostęp administracyjny do serwera jest ograniczony do konkretnego adresu IP, a panel Grafany jest chroniony za pomocą tunelu SSH.
+- **Geolokalizacja Ataków:** Automatyczne wzbogacanie logów o dane geograficzne na podstawie adresu IP atakującego.
+- **Głęboka Analiza Pakietów:** Usługa `tcpdump` w tle przechwytuje cały ruch na portach honeypota.
+- **Bezpieczeństwo:** Dostęp administracyjny do serwera jest ograniczony do Twojego IP, a panel Grafany jest chroniony za pomocą tunelu SSH.
 
-## 3. Jak to Działa? Architektura i Przepływ Danych
+## 3. Architektura i Przepływ Danych
 
-System składa się z kilku współpracujących ze sobą komponentów. Poniżej przedstawiono przepływ danych od momentu ataku do jego wizualizacji.
-
-![Diagram Architektury](https://i.imgur.com/YOUR_DIAGRAM_URL.png)  <!-- Możesz stworzyć i wstawić tu link do diagramu -->
+System składa się z kilku współpracujących ze sobą komponentów.
 
 **Krok 1: Provisioning Infrastruktury (Terraform)**
-1.  Użytkownik uruchamia `terraform apply`.
-2.  Terraform komunikuje się z API AWS i tworzy następujące zasoby:
-    - **Instancja EC2:** Maszyna wirtualna z systemem Ubuntu 22.04 LTS.
-    - **Grupa Bezpieczeństwa:** Firewall skonfigurowany tak, aby:
-        - Zezwalać na ruch przychodzący z całego świata na porty **22 (SSH)** i **23 (Telnet)** - to są nasze "pułapki".
-        - Zezwalać na ruch na port **22222 (zarządzanie SSH)** wyłącznie z adresu IP użytkownika.
-        - Blokować wszelki inny ruch przychodzący (w tym na port Grafany **3000**).
-    - **Para Kluczy SSH:** Do bezpiecznego logowania na serwer.
+1.  Użytkownik uzupełnia plik `terraform.tfvars` swoimi sekretami i uruchamia `terraform apply`.
+2.  Terraform tworzy w AWS instancję EC2 oraz grupę bezpieczeństwa (firewall), która:
+    - Otwiera porty **22 (SSH)** i **23 (Telnet)** na świat (pułapki honeypota).
+    - Otwiera port **22222 (zarządzanie SSH)** wyłącznie dla Twojego adresu IP.
+    - Blokuje wszelki inny ruch przychodzący.
 
-**Krok 2: Automatyczna Konfiguracja (Skrypt `user_data.sh`)**
-Gdy instancja EC2 uruchamia się po raz pierwszy, wykonuje skrypt `user_data.sh`, który:
-1.  Aktualizuje system i instaluje niezbędne pakiety (`docker`, `docker-compose`, `tcpdump`, `iptables-persistent`).
-2.  Pobiera bazę danych **GeoLite2** od MaxMind, niezbędną do geolokalizacji.
-3.  **Dynamicznie generuje pliki konfiguracyjne** (`docker-compose.yml`, `promtail-config.yml`, `loki-config.yml`) bezpośrednio na serwerze.
-4.  **Zmienia port systemowej usługi SSH z 22 na 22222**, aby zwolnić domyślny port dla honeypota.
-5.  Konfiguruje **`iptables`** do przekierowania całego ruchu z publicznych portów `22` i `23` na wewnętrzne porty kontenera Cowrie (`2222` i `2223`).
-6.  Uruchamia **`tcpdump`** jako usługę `systemd`, która w tle zapisuje ruch sieciowy do plików `.pcap`.
-7.  Na końcu uruchamia cały stos aplikacji za pomocą `docker-compose up -d`.
+**Krok 2: Automatyczna Konfiguracja (Skrypt `user_data.tftpl`)**
+Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.tftpl`, który:
+1.  Instaluje i konfiguruje wszystkie niezbędne pakiety (`docker`, `docker-compose`, `tcpdump`).
+2.  **Wstrzykuje sekrety** (hasło Grafany, klucze MaxMind) przekazane przez Terraform do konfiguracji kontenerów.
+3.  Dynamicznie generuje plik `docker-compose.yml` oraz konfiguracje dla pozostałych usług.
+4.  Zmienia domyślny port SSH serwera na **22222**.
+5.  Konfiguruje `iptables` do przekierowania ruchu z portów 22 i 23 na porty kontenera Cowrie.
+6.  Uruchamia `tcpdump` jako usługę w tle.
+7.  Uruchamia cały stos aplikacji za pomocą `docker-compose up -d`.
 
 **Krok 3: Atak i Przechwycenie Danych (Cowrie)**
-1.  Atakujący skanuje internet i znajduje otwarte porty 22/23 na publicznym IP naszej instancji.
+1.  Atakujący łączy się z portem 22 lub 23 na publicznym IP serwera.
 2.  `iptables` transparentnie przekierowuje jego połączenie do kontenera **Cowrie**.
-3.  Cowrie emuluje serwer SSH/Telnet i zapisuje wszystkie interakcje (próby logowania, wpisywane komendy, przesyłane pliki) do pliku `cowrie.json`.
+3.  Cowrie emuluje serwer i zapisuje wszystkie interakcje do logów w formacie JSON.
 
-**Krok 4: Agregacja i Wizualizacja (Promtail -> Loki -> Grafana)**
-1.  **Promtail** monitoruje plik `cowrie.json`.
-2.  Gdy pojawia się nowy wpis, Promtail:
-    - Odczytuje go.
-    - Wyciąga adres IP atakującego (`src_ip`).
-    - Używa bazy **GeoLite2**, aby dodać do logu informacje o kraju, mieście i współrzędnych geograficznych.
-    - Wysyła wzbogacony log do **Loki**.
-3.  **Loki** agreguje i indeksuje logi, udostępniając je do zapytań.
-4.  **Grafana**, połączona z Loki jako źródłem danych, wykonuje zapytania (np. "pokaż liczbę ataków z podziałem na kraje") i wizualizuje wyniki na dashboardzie w postaci map, wykresów i tabel.
+**Krok 4: Agregacja i Wizualizacja (Promtail -> VictoriaLogs -> Grafana)**
+1.  **Promtail** monitoruje logi Cowrie.
+2.  Gdy pojawia się nowy wpis, Promtail odczytuje go, wzbogaca o dane **GeoIP** i wysyła do **VictoriaLogs**.
+3.  **VictoriaLogs** to wydajna baza danych zoptymalizowana do przechowywania i przeszukiwania logów.
+4.  **Grafana** łączy się z VictoriaLogs i wizualizuje dane na dashboardach (mapy, wykresy, tabele).
 
 ## 4. Struktura Projektu
 
 ```
 .
 ├── main.tf                # Główny plik Terraform definiujący infrastrukturę AWS
-├── user_data.sh           # Skrypt do automatycznej konfiguracji instancji EC2
-├── README.md              # Ten plik
-└── projekt-bsk2-key.pem   # Klucz prywatny SSH pobrany z AWS (NIE WYSYŁAJ GO DO GIT!)
+├── variables.tf           # Definicje zmiennych (w tym sekretów) dla Terraform
+├── user_data.tftpl        # Szablon skryptu do automatycznej konfiguracji instancji EC2
+├── terraform.tfvars.example # Przykładowy plik na sekrety
+├── .gitignore             # Plik zapobiegający wysyłaniu sekretów i plików stanu do Git
+└── README.md              # Ten plik
 ```
 
 ## 5. Wymagania
 
-Przed rozpoczęciem upewnij się, że masz:
 1.  Konto w **AWS**.
 2.  Zainstalowane i skonfigurowane **AWS CLI** z poświadczeniami dostępowymi.
-3.  Zainstalowany **Terraform** (wersja 1.0.0 lub nowsza).
+3.  Zainstalowany **Terraform** (wersja 1.11.2 lub nowsza).
 4.  **Klucz licencyjny i ID konta MaxMind GeoLite2**. Można je uzyskać za darmo po rejestracji na [stronie MaxMind](https://www.maxmind.com/en/geolite2/signup).
 
 ## 6. Instrukcja Uruchomienia
 
-1.  **Sklonuj to repozytorium lub pobierz pliki**.
+1.  **Sklonuj to repozytorium**.
 
 2.  **Stwórz parę kluczy SSH w konsoli AWS**:
-    - Zaloguj się do konsoli AWS i przejdź do usługi **EC2**.
-    - W menu po lewej stronie znajdź `Network & Security` -> `Key Pairs`.
-    - Kliknij `Create key pair`.
-    - Wpisz nazwę: **`projekt-bsk2-key`** (musi być dokładnie taka nazwa!).
-    - Wybierz format klucza prywatnego: `pem`.
-    - Kliknij `Create key pair` i pobierz plik `projekt-bsk2-key.pem`.
-    - **Umieść pobrany plik `projekt-bsk2-key.pem` w głównym katalogu projektu**.
+    - Przejdź do usługi **EC2** -> `Key Pairs`.
+    - Stwórz nową parę kluczy o nazwie **`projekt-bsk2-key`** w formacie `.pem`.
+    - Pobierz plik `projekt-bsk2-key.pem` i umieść go w głównym katalogu projektu.
 
-3.  **Edytuj plik `user_data.sh`**:
-    - Wklej swoje ID konta i klucz licencyjny MaxMind w zmiennych `GEOIPUPDATE_ACCOUNT_ID` i `GEOIPUPDATE_LICENSE_KEY`.
-    - (Opcjonalnie) Zmień hasło administratora Grafany w zmiennej `GRAFANA_ADMIN_PASSWORD`.
+3.  **Skonfiguruj sekrety**:
+    - Zrób kopię pliku `terraform.tfvars.example` i nazwij ją `terraform.tfvars`.
+    - Otwórz `terraform.tfvars` i uzupełnij go swoimi danymi:
+      ```hcl
+      grafana_admin_password  = "TWOJE_BARDZO_SILNE_HASLO"
+      geoipupdate_account_id  = "TWOJE_ID_KONTA_MAXMIND"
+      geoipupdate_license_key = "TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
+      ```
 
 4.  **Zainicjuj Terraform**:
     ```bash
@@ -101,7 +95,7 @@ Przed rozpoczęciem upewnij się, że masz:
 
 5.  **Wdróż infrastrukturę**:
     ```bash
-    terraform apply -auto-approve
+    terraform apply
     ```
     Po kilku minutach Terraform wyświetli publiczny adres IP instancji oraz gotowe komendy do połączenia.
 
@@ -112,9 +106,10 @@ Przed rozpoczęciem upewnij się, że masz:
     ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@<PUBLICZNE_IP>
     ```
 2.  Otwórz przeglądarkę i wejdź na `http://localhost:3000`.
-3.  Zaloguj się do Grafany (użytkownik: `admin`, hasło: to, które ustawiłeś w skrypcie).
-4.  Zaimportuj gotowy dashboard, podając ID `23141` w sekcji `Dashboards -> Import`.
-5.  Pobierz pliki z przechwyconym ruchem (`.pcap`) za pomocą `scp` do analizy w Wireshark (komenda również na wyjściu `terraform apply`):
+3.  Zaloguj się do Grafany (użytkownik: `admin`, hasło: to, które ustawiłeś w pliku `terraform.tfvars`).
+4.  Dashboard powinien zostać automatycznie zaimportowany. Jeśli nie, możesz go dodać ręcznie, używając VictoriaLogs jako źródła danych.
+
+5.  Pobierz pliki z przechwyconym ruchem (`.pcap`) za pomocą `scp` (komenda również na wyjściu `terraform apply`):
     ```bash
     scp -i projekt-bsk2-key.pem -P 22222 "ubuntu@<PUBLICZNE_IP>:/opt/honeypot/pcap_data/*.pcap" .
     ```

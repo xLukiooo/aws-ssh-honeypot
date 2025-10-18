@@ -5,9 +5,9 @@ set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
 # KONFIGURACJA ZMIENNYCH
-GRAFANA_ADMIN_PASSWORD="SuperTajneHaslo123!"
-GEOIPUPDATE_ACCOUNT_ID="TWOJE_ID_KONTA_MAXMIND"
-GEOIPUPDATE_LICENSE_KEY="TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
+GRAFANA_ADMIN_PASSWORD="${grafana_admin_password}"
+GEOIPUPDATE_ACCOUNT_ID="${geoipupdate_account_id}"
+GEOIPUPDATE_LICENSE_KEY="${geoipupdate_license_key}"
 DOCKER_COMPOSE_VERSION="v2.23.0"
 COWRIE_IMAGE="cowrie/cowrie:latest"
 VICTORIALOGS_IMAGE="victoriametrics/victoria-logs:latest"
