@@ -2,7 +2,7 @@
 
 ## 1. Cel Projektu
 
-Celem tego projektu jest stworzenie w pełni zautomatyzowanego, gotowego do wdrożenia systemu honeypot na platformie AWS. System wykorzystuje **Cowrie** do emulacji usług SSH i Telnet, aby przyciągać, przechwytywać i analizować próby nieautoryzowanego dostępu.
+Celem tego projektu jest stworzenie w pełni zautomatyzowanego, gotowego do wdrożenia systemu honeypot na platformie AWS. System wykorzystuje **Cowrie** do emulacji usługi SSH, aby przyciągać, przechwytywać i analizować próby nieautoryzowanego dostępu.
 
 Cała infrastruktura jest definiowana jako kod (IaC) za pomocą **Terraform**, a konfiguracja serwera odbywa się automatycznie. Stos oprogramowania do analizy (**VictoriaLogs**, Promtail, Grafana) działa w kontenerach **Docker**, zapewniając izolację i łatwość zarządzania. Sekrety (hasła, klucze API) są zarządzane w bezpieczny sposób za pomocą zmiennych Terraform.
 
@@ -26,7 +26,7 @@ System składa się z kilku współpracujących ze sobą komponentów.
 **Krok 1: Provisioning Infrastruktury (Terraform)**
 1.  Użytkownik uzupełnia plik `terraform.tfvars` swoimi sekretami i uruchamia `terraform apply`.
 2.  Terraform tworzy w AWS instancję EC2 oraz grupę bezpieczeństwa (firewall), która:
-    - Otwiera porty **22 (SSH)** i **23 (Telnet)** na świat (pułapki honeypota).
+    - Otwiera port **22 (SSH)** na świat (pułapka honeypota).
     - Otwiera port **22222 (zarządzanie SSH)** wyłącznie dla Twojego adresu IP.
     - Blokuje wszelki inny ruch przychodzący.
 
@@ -36,12 +36,12 @@ Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.t
 2.  **Wstrzykuje sekrety** (hasło Grafany, klucze MaxMind) przekazane przez Terraform do konfiguracji kontenerów.
 3.  Dynamicznie generuje plik `docker-compose.yml` oraz konfiguracje dla pozostałych usług.
 4.  Zmienia domyślny port SSH serwera na **22222**.
-5.  Konfiguruje `iptables` do przekierowania ruchu z portów 22 i 23 na porty kontenera Cowrie.
+5.  Konfiguruje `iptables` do przekierowania ruchu z portu 22 na port kontenera Cowrie.
 6.  Uruchamia `tcpdump` jako usługę w tle.
 7.  Uruchamia cały stos aplikacji za pomocą `docker-compose up -d`.
 
 **Krok 3: Atak i Przechwycenie Danych (Cowrie)**
-1.  Atakujący łączy się z portem 22 lub 23 na publicznym IP serwera.
+1.  Atakujący łączy się z portem 22 na publicznym IP serwera.
 2.  `iptables` transparentnie przekierowuje jego połączenie do kontenera **Cowrie**.
 3.  Cowrie emuluje serwer i zapisuje wszystkie interakcje do logów w formacie JSON.
 
@@ -58,7 +58,6 @@ Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.t
 ├── main.tf                # Główny plik Terraform definiujący infrastrukturę AWS
 ├── variables.tf           # Definicje zmiennych (w tym sekretów) dla Terraform
 ├── user_data.tftpl        # Szablon skryptu do automatycznej konfiguracji instancji EC2
-├── terraform.tfvars.example # Przykładowy plik na sekrety
 ├── .gitignore             # Plik zapobiegający wysyłaniu sekretów i plików stanu do Git
 └── README.md              # Ten plik
 ```
@@ -67,7 +66,7 @@ Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.t
 
 1.  Konto w **AWS**.
 2.  Zainstalowane i skonfigurowane **AWS CLI** z poświadczeniami dostępowymi.
-3.  Zainstalowany **Terraform** (wersja 1.11.2 lub nowsza).
+3.  Zainstalowany **Terraform** (wersja 1.1.2 lub nowsza).
 4.  **Klucz licencyjny i ID konta MaxMind GeoLite2**. Można je uzyskać za darmo po rejestracji na [stronie MaxMind](https://www.maxmind.com/en/geolite2/signup).
 
 ## 6. Instrukcja Uruchomienia
@@ -80,7 +79,7 @@ Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.t
     - Pobierz plik `projekt-bsk2-key.pem` i umieść go w głównym katalogu projektu.
 
 3.  **Skonfiguruj sekrety**:
-    - Zrób kopię pliku `terraform.tfvars.example` i nazwij ją `terraform.tfvars`.
+    - Stwórz plik `terraform.tfvars`.
     - Otwórz `terraform.tfvars` i uzupełnij go swoimi danymi:
       ```hcl
       grafana_admin_password  = "TWOJE_BARDZO_SILNE_HASLO"
