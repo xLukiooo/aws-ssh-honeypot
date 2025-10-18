@@ -35,6 +35,10 @@ mkdir -p $VICTORIALOGS_DIR
 mkdir -p $GRAFANA_DIR/provisioning/datasources $GRAFANA_DIR/data
 mkdir -p $PCAP_DIR
 
+chmod -R 700 $PCAP_DIR
+chmod -R 700 $PROMTAIL_DIR
+chmod -R 700 $VICTORIALOGS_DIR
+
 echo "=== SEKCJA 3: Instalacja Dockera ==="
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
