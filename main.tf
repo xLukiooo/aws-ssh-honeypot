@@ -20,7 +20,7 @@ data "http" "my_ip" {
 # ===================================================================
 resource "aws_security_group" "honeypot_sg" {
   name        = "honeypot-sg"
-  description = "Reguły firewalla dla projektu Honeypot BSK2"
+  description = "Firewall rules for the Honeypot BSK2 project"
 
   # Port 22 - SSH honeypot (pułapka)
   ingress {
@@ -37,7 +37,7 @@ resource "aws_security_group" "honeypot_sg" {
     to_port     = 22222
     protocol    = "tcp"
     cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
-    description = "Zarzadzanie serwerem (SSH)"
+    description = "Server management (SSH)"
   }
 
   # Ruch wychodzący - tylko niezbędne porty (HTTP, HTTPS, DNS)
@@ -48,7 +48,7 @@ resource "aws_security_group" "honeypot_sg" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTP dla aktualizacji"
+    description = "HTTP for updates"
   }
 
   egress {
@@ -56,7 +56,7 @@ resource "aws_security_group" "honeypot_sg" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS dla Docker i aktualizacji"
+    description = "HTTPS for Docker and updates"
   }
 
   egress {
@@ -164,30 +164,30 @@ resource "aws_instance" "honeypot_instance" {
 
 output "honeypot_public_ip" {
   value       = aws_instance.honeypot_instance.public_ip
-  description = "Publiczny IP honeypota"
+  description = "Public IP of the honeypot"
 }
 
 output "ssh_management_command" {
   value       = "ssh -i projekt-bsk2-key.pem -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
-  description = "Komenda SSH do zarządzania"
+  description = "SSH management command"
 }
 
 output "grafana_tunnel_command" {
   value       = "ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
-  description = "Tunel SSH do Grafany"
+  description = "SSH tunnel to Grafana"
 }
 
 output "tcpdump_download_command" {
   value       = "scp -i projekt-bsk2-key.pem -P 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}:/opt/honeypot/pcap_data/capture*.pcap ."
-  description = "Pobranie plików PCAP"
+  description = "Download PCAP files"
 }
 
 output "honeypot_ssh_test_command" {
   value       = "ssh root@${aws_instance.honeypot_instance.public_ip}"
-  description = "Test honeypota jako atakujący"
+  description = "Test honeypot as an attacker"
 }
 
 output "cloudwatch_log_group" {
   value       = aws_cloudwatch_log_group.honeypot_logs.name
-  description = "Nazwa grupy logów CloudWatch"
+  description = "CloudWatch log group name"
 }

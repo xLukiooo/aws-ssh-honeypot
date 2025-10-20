@@ -5,9 +5,10 @@ set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
 # KONFIGURACJA ZMIENNYCH
+# Zmienne te są wstrzykiwane przez Terraform na podstawie plików *.tfvars i variables.tf
 grafana_admin_password="${grafana_admin_password}"
-geoupdate_account_id="${geoipupdate_account_id}"
-geoupdate_license_key="${geoipupdate_license_key}"
+geoipupdate_account_id="${geoipupdate_account_id}"
+geoipupdate_license_key="${geoipupdate_license_key}"
 docker_compose_version="${docker_compose_version}"
 COWRIE_IMAGE="cowrie/cowrie:latest"
 VICTORIALOGS_IMAGE="victoriametrics/victoria-logs:latest"
@@ -60,10 +61,20 @@ volumes:
   cowrie-data:
   victorialogs-data:
 
+networks:
+  honeypot-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
 services:
   cowrie:
     image: cowrie/cowrie:latest
     container_name: cowrie
+    networks:
+      honeypot-net:
+        ipv4_address: 172.20.0.100
     volumes:
       - cowrie-log:/cowrie/cowrie-git/var/log/cowrie
       - cowrie-data:/cowrie/cowrie-git/var/lib/cowrie
@@ -74,6 +85,8 @@ services:
   geoipupdate:
     image: ghcr.io/maxmind/geoipupdate:latest
     container_name: geoipupdate
+    networks:
+      - honeypot-net
     restart: always
     environment:
       - GEOIPUPDATE_ACCOUNT_ID=${geoipupdate_account_id}
@@ -91,6 +104,8 @@ services:
   victorialogs:
     image: victoriametrics/victoria-logs:latest
     container_name: victorialogs
+    networks:
+      - honeypot-net
     volumes:
       - victorialogs-data:/victoria-logs-data
     ports:
@@ -103,6 +118,8 @@ services:
   promtail:
     image: grafana/promtail:2.9.2
     container_name: promtail
+    networks:
+      - honeypot-net
     depends_on:
       geoipupdate:
         condition: service_healthy
@@ -116,6 +133,8 @@ services:
   grafana:
     image: grafana/grafana:10.1.5
     container_name: grafana
+    networks:
+      - honeypot-net
     volumes:
       - ./grafana/data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -231,7 +250,7 @@ cat << 'CLEANUP_EOF' > "$CLEAN_SCRIPT"
 #!/bin/bash
 # Czyszczenie starych plików pobranych przez Cowrie
 VOLUME_NAME="honeypot_cowrie-data"
-docker run --rm -v $${VOLUME_NAME}:/data alpine sh -c '
+docker run --rm -v $VOLUME_NAME:/data alpine sh -c '
   find /data/downloads -type f -size +10M -delete 2>/dev/null || true
   TOTAL=$(find /data/downloads -type f 2>/dev/null | wc -l)
   if [ "$TOTAL" -gt 100 ]; then
@@ -263,6 +282,10 @@ sleep 3
 /usr/local/bin/docker-compose up -d
 sleep 20
 
+echo "=== Konfiguracja reguły firewalla dla Cowrie ==="
+iptables -I DOCKER-USER -s 172.20.0.100 ! -d 172.20.0.0/24 -j DROP
+echo "Reguła firewalla dodana."
+
 docker ps | grep cowrie || { echo "KRYTYCZNY BŁĄD: Kontener Cowrie nie uruchomił się poprawnie!"; exit 1; }
 echo "Kontenery uruchomione pomyślnie:"
 docker ps
@@ -284,7 +307,7 @@ echo "=== KONFIGURACJA HONEYPOT ZAKOŃCZONA ==="
 echo "========================================="
 echo ""
 echo "Dostęp do usług:"
-echo "  - Grafana: http://<IP>:3000 (admin / $GRAFANA_ADMIN_PASSWORD)"
+echo "  - Grafana: http://<IP>:3000 (admin / $grafana_admin_password)"
 echo "  - VictoriaLogs: http://<IP>:9428"
 echo "  - SSH Honeypot: port 22 => 2222"
 echo "  - Prawdziwy SSH: port 22222"
