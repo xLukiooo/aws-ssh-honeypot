@@ -1,11 +1,12 @@
 #!/bin/bash
-# Wersja 5.0 - VictoriaLogs zamiast Loki + GeoIP
+# Wersja 8.0 - Skrypt do ręcznego uruchomienia (PO migracji SSH)
 
 set -e
-exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+exec > >(tee /var/log/honeypot_manual_install.log|logger -t honeypot-install -s 2>/dev/console) 2>&1
 
-# KONFIGURACJA ZMIENNYCH
-# Zmienne te są wstrzykiwane przez Terraform na podstawie plików *.tfvars i variables.tf
+# ==============================================================================
+# === KROK 1: Uzupełnij poniższe zmienne PRZED uruchomieniem skryptu! ===
+# ==============================================================================
 grafana_admin_password="${grafana_admin_password}"
 geoipupdate_account_id="${geoipupdate_account_id}"
 geoipupdate_license_key="${geoipupdate_license_key}"
@@ -21,15 +22,22 @@ VICTORIALOGS_DIR="$HONEYPOT_DIR/victorialogs"
 GRAFANA_DIR="$HONEYPOT_DIR/grafana"
 PCAP_DIR="$HONEYPOT_DIR/pcap_data"
 
-echo "=== SEKCJA 2: Przygotowanie systemu ==="
+
+echo "=== SEKCJA 1: Przygotowanie systemu ==="
 apt-get update
 apt-get upgrade -y
-# Pre-konfiguruj odpowiedzi dla iptables-persistent (aby uniknąć interaktywnego promptu)
+
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
-# Instalacja pakietów w trybie nieinteraktywnym
-DEBIAN_FRONTEND=noninteractive apt-get install -y apt-transport-https ca-certificates curl software-properties-common iptables-persistent tcpdump
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    software-properties-common \
+    iptables-persistent \
+    tcpdump
+
 
 mkdir -p $PROMTAIL_DIR
 mkdir -p $VICTORIALOGS_DIR
@@ -40,7 +48,7 @@ chmod -R 700 $PCAP_DIR
 chmod -R 700 $PROMTAIL_DIR
 chmod -R 700 $VICTORIALOGS_DIR
 
-echo "=== SEKCJA 3: Instalacja Dockera ==="
+echo "=== SEKCJA 2: Instalacja Dockera ==="
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
@@ -50,7 +58,25 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 curl -L "https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
 
+
+echo "=== SEKCJA 3: Migracja SSH na port 22222 ==="
+systemctl stop ssh.socket 2>/dev/null || true
+systemctl disable ssh.socket 2>/dev/null || true
+systemctl enable ssh.service
+sed -i '/^#*Port /d' /etc/ssh/sshd_config
+echo "Port 22222" >> /etc/ssh/sshd_config
+grep -q "^ListenAddress" /etc/ssh/sshd_config || echo "ListenAddress 0.0.0.0" >> /etc/ssh/sshd_config
+systemctl restart ssh
+
+# Sprawdzenie na jakich portach nasłuchuje SSH
+echo "✓ Weryfikacja portów SSH:"
+ss -tlpn | grep ssh
+
+echo "✓ SSH przeniesiony na port 22222 (port 22 wolny dla Cowrie)"
+
+
 echo "=== SEKCJA 4: Generowanie plików konfiguracyjnych ==="
+
 
 cat <<EOF > $HONEYPOT_DIR/docker-compose.yml
 version: '3.7'
@@ -70,7 +96,7 @@ networks:
 
 services:
   cowrie:
-    image: cowrie/cowrie:latest
+    image: "cowrie/cowrie:latest"
     container_name: cowrie
     networks:
       honeypot-net:
@@ -79,11 +105,11 @@ services:
       - cowrie-log:/cowrie/cowrie-git/var/log/cowrie
       - cowrie-data:/cowrie/cowrie-git/var/lib/cowrie
     ports:
-      - "2222:2222/tcp"
+      - "22:2222/tcp"
     restart: unless-stopped
 
   geoipupdate:
-    image: ghcr.io/maxmind/geoipupdate:latest
+    image: "ghcr.io/maxmind/geoipupdate:latest"
     container_name: geoipupdate
     networks:
       - honeypot-net
@@ -102,7 +128,7 @@ services:
       retries: 5
 
   victorialogs:
-    image: victoriametrics/victoria-logs:latest
+    image: "victoriametrics/victoria-logs:latest"
     container_name: victorialogs
     networks:
       - honeypot-net
@@ -116,7 +142,7 @@ services:
     restart: unless-stopped
 
   promtail:
-    image: grafana/promtail:2.9.2
+    image: "grafana/promtail:2.9.2"
     container_name: promtail
     networks:
       - honeypot-net
@@ -131,7 +157,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:10.1.5
+    image: "grafana/grafana:10.1.5"
     container_name: grafana
     networks:
       - honeypot-net
@@ -146,7 +172,9 @@ services:
     restart: unless-stopped
 EOF
 
+
 echo "docker-compose.yml wygenerowany."
+
 
 # KONFIG PROMTAIL z GeoIP
 cat <<EOF > $PROMTAIL_DIR/promtail.yml
@@ -199,6 +227,7 @@ scrape_configs:
           geoip_longitude:
 EOF
 
+
 # KONFIG GRAFANA dla VictoriaLogs
 cat <<EOF > $GRAFANA_DIR/provisioning/datasources/victorialogs.yml
 apiVersion: 1
@@ -213,21 +242,13 @@ datasources:
   editable: true
 EOF
 
-# ZMIANA PORTU SSH
-sed -i '/^#*Port /d' /etc/ssh/sshd_config
-echo "Port 22222" >> /etc/ssh/sshd_config
-systemctl restart sshd || { echo "KRYTYCZNY BŁĄD: Nie udało się zrestartować usługi SSHD po zmianie portu!"; exit 1; }
 
-sysctl -w net.ipv4.ip_forward=1
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
-
-iptables -t nat -L PREROUTING -n -v
-
+echo "=== SEKCJA 5: Konfiguracja TCPDump ==="
 cat <<EOF > /etc/systemd/system/tcpdump-honeypot.service
 [Unit]
 Description=TCPDump Honeypot Packet Capture
-After=network.target
+After=network.target docker.service
+Requires=docker.service
 
 [Service]
 Type=simple
@@ -241,14 +262,15 @@ MemoryMax=500M
 WantedBy=multi-user.target
 EOF
 
+
 systemctl daemon-reload
 systemctl enable --now tcpdump-honeypot.service
 
-# SKRYPT CZYSZCZĄCY DANE COWRIE
+
+echo "=== SEKCJA 6: Skrypt czyszczący dane Cowrie ==="
 CLEAN_SCRIPT="/usr/local/bin/cowrie_cleanup.sh"
 cat << 'CLEANUP_EOF' > "$CLEAN_SCRIPT"
 #!/bin/bash
-# Czyszczenie starych plików pobranych przez Cowrie
 VOLUME_NAME="honeypot_cowrie-data"
 docker run --rm -v $VOLUME_NAME:/data alpine sh -c '
   find /data/downloads -type f -size +10M -delete 2>/dev/null || true
@@ -261,6 +283,8 @@ CLEANUP_EOF
 chmod +x "$CLEAN_SCRIPT"
 echo "0 2 * * * root $CLEAN_SCRIPT" >> /etc/crontab
 
+
+echo "=== SEKCJA 7: Uprawnienia katalogów ==="
 chown -R 472:472 $GRAFANA_DIR/data
 chown -R 472:472 $GRAFANA_DIR/provisioning
 chown -R root:root $PROMTAIL_DIR
@@ -269,38 +293,58 @@ chmod -R 755 $HONEYPOT_DIR
 chmod -R 755 $PROMTAIL_DIR
 chmod -R 755 $VICTORIALOGS_DIR
 
-sleep 2
-cd $HONEYPOT_DIR
-docker pull $COWRIE_IMAGE
-docker pull $VICTORIALOGS_IMAGE
-docker pull $PROMTAIL_IMAGE
-docker pull $GRAFANA_IMAGE
-docker pull $GEOIPUPDATE_IMAGE
 
+echo "=== SEKCJA 8: Pobieranie obrazów Docker ==="
+cd $HONEYPOT_DIR
+docker pull "cowrie/cowrie:latest"
+docker pull "victoriametrics/victoria-logs:latest"
+docker pull "grafana/promtail:2.9.2"
+docker pull "grafana/grafana:10.1.5"
+docker pull "ghcr.io/maxmind/geoipupdate:latest"
+
+
+echo "=== SEKCJA 9: Uruchomienie kontenerów Honeypot ==="
+# Zatrzymaj istniejące kontenery (jeśli były)
 /usr/local/bin/docker-compose down 2>/dev/null || true
 sleep 3
+
+# Uruchom kontenery - port 22 jest już wolny!
 /usr/local/bin/docker-compose up -d
 sleep 20
 
-echo "=== Konfiguracja reguły firewalla dla Cowrie ==="
-iptables -I DOCKER-USER -s 172.20.0.100 ! -d 172.20.0.0/24 -j DROP
-echo "Reguła firewalla dodana."
 
-docker ps | grep cowrie || { echo "KRYTYCZNY BŁĄD: Kontener Cowrie nie uruchomił się poprawnie!"; exit 1; }
-echo "Kontenery uruchomione pomyślnie:"
-docker ps
+echo "=== SEKCJA 10: Blokada outgoing HTTP/HTTPS/DNS dla Cowrie ==="
+iptables -I FORWARD -s 172.20.0.100 -p tcp --dport 80 -j REJECT
+iptables -I FORWARD -s 172.20.0.100 -p tcp --dport 443 -j REJECT
+iptables -I FORWARD -s 172.20.0.100 -p tcp --dport 8080 -j REJECT
+iptables -I FORWARD -s 172.20.0.100 -p udp --dport 53 -j REJECT
+echo "Reguły firewalla dla Cowrie dodane (blokada wget/curl/DNS)."
 
-echo "=== Sprawdzanie logów Cowrie ==="
-docker logs cowrie --tail 30
 
-echo "=== Sprawdzanie logów Promtail ==="
-docker logs promtail --tail 20
 
-echo "=== Sprawdzanie logów VictoriaLogs ==="
-docker logs victorialogs --tail 20
-
+echo "=== SEKCJA 11: Dodatkowe zabezpieczenia ==="
 iptables -A OUTPUT -p tcp --dport 25 ! -d 127.0.0.1 -j DROP
 iptables-save > /etc/iptables/rules.v4
+
+
+echo "=== SEKCJA 12: Weryfikacja ==="
+docker ps | grep cowrie || { echo "KRYTYCZNY BŁĄD: Kontener Cowrie nie uruchomił się!"; exit 1; }
+echo "✓ Kontenery uruchomione pomyślnie:"
+docker ps
+
+echo ""
+echo "=== Logi kontenerów ==="
+echo "--- Cowrie ---"
+docker logs cowrie --tail 30
+echo ""
+echo "--- Promtail ---"
+docker logs promtail --tail 20
+echo ""
+echo "--- VictoriaLogs ---"
+docker logs victorialogs --tail 20
+echo ""
+echo "--- GeoIPUpdate ---"
+docker logs geoipupdate --tail 20
 
 echo "========================================="
 echo "=== KONFIGURACJA HONEYPOT ZAKOŃCZONA ==="

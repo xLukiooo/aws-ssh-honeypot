@@ -15,108 +15,85 @@ data "http" "my_ip" {
 
 
 # ===================================================================
-# Security Group - Firewall dla honeypota
-# Port 22 otwarty jako pułapka, ruch wychodzący ograniczony
+# VPC + publiczny subnet + IGW + trasa do internetu
+# ===================================================================
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags                 = { Name = "honeypot-vpc" }
+}
+
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "honeypot-igw" }
+}
+
+
+resource "aws_subnet" "public_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
+  tags                    = { Name = "honeypot-public-a" }
+}
+
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "honeypot-public-rt" }
+}
+
+
+resource "aws_route" "default_igw" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+
+resource "aws_route_table_association" "public_a" {
+  subnet_id      = aws_subnet.public_a.id
+  route_table_id = aws_route_table.public.id
+}
+
+
+# ===================================================================
+# Security Group - Firewall do ręcznej konfiguracji
 # ===================================================================
 resource "aws_security_group" "honeypot_sg" {
   name        = "honeypot-sg"
   description = "Firewall rules for the Honeypot BSK2 project"
+  vpc_id      = aws_vpc.main.id
 
-  # Port 22 - SSH honeypot (pułapka)
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Honeypot SSH (Cowrie)"
+    cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
+    description = "Initial SSH access (Port 22)"
   }
 
-  # Port 22222 - SSH administracyjny (tylko z Twojego IP)
   ingress {
     from_port   = 22222
     to_port     = 22222
     protocol    = "tcp"
     cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
-    description = "Server management (SSH)"
+    description = "Server management after migration (SSH)"
   }
 
-  # Ruch wychodzący - tylko niezbędne porty (HTTP, HTTPS, DNS)
-  # Port 25 (SMTP) celowo pominięty - blokada wysyłania emaili
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow all egress"
+  }
   
-  egress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTP for updates"
-  }
-
-  egress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS for Docker and updates"
-  }
-
-  egress {
-    from_port   = 53
-    to_port     = 53
-    protocol    = "udp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "DNS"
-  }
-
   tags = {
     Name = "honeypot-sg-secure"
   }
-}
-
-
-# ===================================================================
-# CloudWatch Log Group - przechowywanie logów przez 30 dni
-# ===================================================================
-resource "aws_cloudwatch_log_group" "honeypot_logs" {
-  name              = "/aws/ec2/honeypot-bsk2"
-  retention_in_days = 30
-
-  tags = {
-    Name        = "Honeypot-Logs"
-    Environment = "Security-Research"
-  }
-}
-
-
-# ===================================================================
-# IAM Role - pozwala instancji wysyłać logi do CloudWatch
-# ===================================================================
-resource "aws_iam_role" "honeypot_cloudwatch_role" {
-  name = "honeypot-cloudwatch-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-    }]
-  })
-
-  tags = {
-    Name = "Honeypot-CloudWatch-Role"
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "cloudwatch_logs_policy" {
-  role       = aws_iam_role.honeypot_cloudwatch_role.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
-}
-
-resource "aws_iam_instance_profile" "honeypot_profile" {
-  name = "honeypot-instance-profile"
-  role = aws_iam_role.honeypot_cloudwatch_role.name
 }
 
 
@@ -128,9 +105,11 @@ resource "aws_instance" "honeypot_instance" {
   ami                         = "ami-0360c520857e3138f"
   instance_type               = "t2.micro"
   key_name                    = "projekt-bsk2-key"
+  # --- KLUCZOWA POPRAWKA ---
+  # Jawnie przypisujemy instancję do podsieci w naszym nowym VPC
+  subnet_id                   = aws_subnet.public_a.id
   vpc_security_group_ids      = [aws_security_group.honeypot_sg.id]
   associate_public_ip_address = true
-  iam_instance_profile        = aws_iam_instance_profile.honeypot_profile.name
 
   # Dysk zaszyfrowany, 30GB, gp3
   root_block_device {
@@ -185,9 +164,4 @@ output "tcpdump_download_command" {
 output "honeypot_ssh_test_command" {
   value       = "ssh root@${aws_instance.honeypot_instance.public_ip}"
   description = "Test honeypot as an attacker"
-}
-
-output "cloudwatch_log_group" {
-  value       = aws_cloudwatch_log_group.honeypot_logs.name
-  description = "CloudWatch log group name"
 }
