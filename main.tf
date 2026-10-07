@@ -2,7 +2,7 @@
 # Provider Configuration
 # ===================================================================
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
 }
 
 
@@ -12,6 +12,16 @@ provider "aws" {
 data "http" "my_ip" {
   url = "https://ipv4.icanhazip.com"
 }
+
+
+# ===================================================================
+# Oficjalny publiczny parametr AWS dla Ubuntu 22.04 LTS (x86_64)
+# ===================================================================
+data "aws_ssm_parameter" "ubuntu_ami" {
+  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+}
+
+
 
 
 # ===================================================================
@@ -34,7 +44,7 @@ resource "aws_internet_gateway" "igw" {
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
-  availability_zone       = "us-east-1a"
+  availability_zone       = "${var.aws_region}a"
   map_public_ip_on_launch = true
   tags                    = { Name = "honeypot-public-a" }
 }
@@ -60,29 +70,32 @@ resource "aws_route_table_association" "public_a" {
 
 
 # ===================================================================
-# Security Group - Firewall do ręcznej konfiguracji
+# Security Group - Firewall dla Honeypota
 # ===================================================================
 resource "aws_security_group" "honeypot_sg" {
   name        = "honeypot-sg"
-  description = "Firewall rules for the Honeypot BSK2 project"
+  description = "Reguly sieciowe dla srodowiska Honeypot"
   vpc_id      = aws_vpc.main.id
 
+  # Port 22 - Pułapka SSH (Cowrie) - otwarty na cały świat
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
-    description = "Initial SSH access (Port 22)"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Honeypot SSH (Cowrie) - Public trap"
   }
 
+  # Port 22222 - Bezpieczne zarządzanie serwerem - tylko Twój adres IP
   ingress {
     from_port   = 22222
     to_port     = 22222
     protocol    = "tcp"
     cidr_blocks = ["${chomp(data.http.my_ip.response_body)}/32"]
-    description = "Server management after migration (SSH)"
+    description = "Server management (SSH) - Administrator IP only"
   }
 
+  # Zezwolenie na ruch wychodzący
   egress {
     from_port   = 0
     to_port     = 0
@@ -90,36 +103,30 @@ resource "aws_security_group" "honeypot_sg" {
     cidr_blocks = ["0.0.0.0/0"]
     description = "Allow all egress"
   }
-  
+
   tags = {
-    Name = "honeypot-sg-secure"
+    Name = "honeypot-sg"
   }
 }
 
 
 # ===================================================================
 # EC2 Instance - główny serwer honeypota
-# t2.micro (Free Tier), dysk 30GB zaszyfrowany, Ubuntu 22.04 LTS
 # ===================================================================
 resource "aws_instance" "honeypot_instance" {
-  ami                         = "ami-0360c520857e3138f"
-  instance_type               = "t2.micro"
-  key_name                    = "projekt-bsk2-key"
-  # --- KLUCZOWA POPRAWKA ---
-  # Jawnie przypisujemy instancję do podsieci w naszym nowym VPC
+  ami                         = data.aws_ssm_parameter.ubuntu_ami.value
+  instance_type               = "t3.micro"
+  key_name                    = var.key_name
   subnet_id                   = aws_subnet.public_a.id
   vpc_security_group_ids      = [aws_security_group.honeypot_sg.id]
   associate_public_ip_address = true
 
-  # Dysk zaszyfrowany, 30GB, gp3
   root_block_device {
     volume_size           = 30
     volume_type           = "gp3"
-    encrypted             = true
     delete_on_termination = true
   }
 
-  # Skrypt instalacyjny z konfiguracją honeypota
   user_data = templatefile("user_data.tftpl", {
     grafana_admin_password  = var.grafana_admin_password
     geoipupdate_account_id  = var.geoipupdate_account_id
@@ -127,41 +134,9 @@ resource "aws_instance" "honeypot_instance" {
     docker_compose_version  = var.docker_compose_version
   })
 
-  # Tagi dla dokumentacji i zgodności
   tags = {
-    Name        = "Honeypot-BSK2"
+    Name        = "aws-ssh-honeypot"
     Purpose     = "Security Research Honeypot"
-    Project     = "Cybersecurity Education"
     Environment = "Isolated"
   }
-}
-
-
-# ===================================================================
-# Outputs - wyświetlane po terraform apply
-# ===================================================================
-
-output "honeypot_public_ip" {
-  value       = aws_instance.honeypot_instance.public_ip
-  description = "Public IP of the honeypot"
-}
-
-output "ssh_management_command" {
-  value       = "ssh -i projekt-bsk2-key.pem -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
-  description = "SSH management command"
-}
-
-output "grafana_tunnel_command" {
-  value       = "ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}"
-  description = "SSH tunnel to Grafana"
-}
-
-output "tcpdump_download_command" {
-  value       = "scp -i projekt-bsk2-key.pem -P 22222 ubuntu@${aws_instance.honeypot_instance.public_ip}:/opt/honeypot/pcap_data/capture*.pcap ."
-  description = "Download PCAP files"
-}
-
-output "honeypot_ssh_test_command" {
-  value       = "ssh root@${aws_instance.honeypot_instance.public_ip}"
-  description = "Test honeypot as an attacker"
 }

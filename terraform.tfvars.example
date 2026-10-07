@@ -1,0 +1,13 @@
+# Konfiguracja środowiska AWS:
+aws_region = "us-east-1"
+key_name   = "honeypot-key"
+
+# Hasło administratora do panelu Grafana:
+grafana_admin_password = "TwojeSilneHasloGrafana123!"
+
+# Dane darmowego konta MaxMind GeoLite2 (rejestracja: https://www.maxmind.com/en/geolite2/signup):
+geoipupdate_account_id  = "YOUR_MAXMIND_ACCOUNT_ID"
+geoipupdate_license_key = "YOUR_MAXMIND_LICENSE_KEY"
+
+# Opcjonalnie: wersja Docker Compose
+docker_compose_version = "v2.23.0"

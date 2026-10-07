@@ -1,23 +1,35 @@
+variable "aws_region" {
+  description = "Region AWS do wdrożenia infrastruktury."
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "key_name" {
+  description = "Nazwa pary kluczy SSH w AWS EC2 do zarządzania serwerem."
+  type        = string
+  default     = "honeypot-key"
+}
+
 variable "grafana_admin_password" {
-  description = "Password for the Grafana admin user."
+  description = "Hasło administratora do panelu Grafana."
   type        = string
   sensitive   = true
 }
 
 variable "geoipupdate_account_id" {
-  description = "MaxMind GeoIP Update Account ID."
+  description = "Account ID konta MaxMind GeoIP Update."
   type        = string
   sensitive   = true
 }
 
 variable "geoipupdate_license_key" {
-  description = "MaxMind GeoIP Update License Key."
+  description = "Klucz licencyjny MaxMind GeoIP Update."
   type        = string
   sensitive   = true
 }
 
 variable "docker_compose_version" {
-  description = "Docker Compose version to install."
+  description = "Wersja Docker Compose do zainstalowania."
   type        = string
   default     = "v2.23.0"
 }

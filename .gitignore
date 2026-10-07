@@ -14,3 +14,9 @@
 
 # Pliki crash log Terraform
 crash.log
+
+# Pliki środowiskowe i systemowe
+.env
+.env.*
+.DS_Store
+*.pcap

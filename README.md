@@ -1,121 +1,174 @@
-# Projekt Honeypot BSK2 (Automatyczne Wdrożenie na AWS)
+# AWS SSH Honeypot (Cowrie, VictoriaLogs & Grafana)
 
-## 1. Cel Projektu
+Zautomatyzowane środowisko honeypot SSH w chmurze AWS z pułapką Cowrie, lekką bazą logów VictoriaLogs, wzbogacaniem zdarzeń o geolokalizację GeoIP (MaxMind) oraz interaktywną wizualizacją w Grafanie. Całość wdrażana jako kod (IaC) za pomocą Terraforma w odizolowanym VPC z separacją portu pułapki (22) od administracyjnego (22222).
 
-Celem tego projektu jest stworzenie w pełni zautomatyzowanego, gotowego do wdrożenia systemu honeypot na platformie AWS. System wykorzystuje **Cowrie** do emulacji usługi SSH, aby przyciągać, przechwytywać i analizować próby nieautoryzowanego dostępu.
+---
 
-Cała infrastruktura jest definiowana jako kod (IaC) za pomocą **Terraform**, a konfiguracja serwera odbywa się automatycznie. Stos oprogramowania do analizy (**VictoriaLogs**, Promtail, Grafana) działa w kontenerach **Docker**, zapewniając izolację i łatwość zarządzania. Sekrety (hasła, klucze API) są zarządzane w bezpieczny sposób za pomocą zmiennych Terraform.
+## Komponenty architektury
 
-Projekt jest przeznaczony do celów edukacyjnych i badawczych, umożliwiając obserwację i analizę wektorów ataków w czasie rzeczywistym.
+1. **Pułapka SSH (Cowrie):**
+   * Kontener Dockera nasłuchujący na publicznym porcie 22, emulujący podatną powłokę Linuksa.
+   * Przechwytuje próby uwierzytelnienia (loginy, hasła), adresy IP atakujących, wpisywane polecenia oraz nagrywa sesje terminala (TTY).
 
-## 2. Kluczowe Cechy
+2. **Parser i Geolokalizacja (Promtail + MaxMind GeoIP):**
+   * Promtail monitoruje generowane przez Cowrie logi w formacie JSON.
+   * Na bieżąco odpytuje lokalną bazę MaxMind GeoLite2, wzbogacając każdy wpis o kod kraju, miasto oraz współrzędne geograficzne atakującego adresu IP.
 
-- **Pełna Automatyzacja:** Wdrożenie całego systemu za pomocą polecenia `terraform apply`.
-- **Infrastruktura jako Kod (IaC):** Powtarzalne i wersjonowane środowisko dzięki Terraform.
-- **Bezpieczne Zarządzanie Sekretami:** Hasła i klucze API nie są przechowywane w kodzie, lecz wstrzykiwane w bezpieczny sposób przez Terraform.
-- **Stos Dockerowy:** Wszystkie usługi (Cowrie, **VictoriaLogs**, Promtail, Grafana) są skonteneryzowane.
-- **Analiza w Czasie Rzeczywistym:** Interaktywny dashboard w Grafanie do wizualizacji danych o atakach.
-- **Geolokalizacja Ataków:** Automatyczne wzbogacanie logów o dane geograficzne na podstawie adresu IP atakującego.
-- **Głęboka Analiza Pakietów:** Usługa `tcpdump` w tle przechwytuje cały ruch na portach honeypota.
-- **Bezpieczeństwo:** Dostęp administracyjny do serwera jest ograniczony do Twojego IP, a panel Grafany jest chroniony za pomocą tunelu SSH.
+3. **Baza Logów (VictoriaLogs):**
+   * Wysoko wydajna, lekka baza danych zoptymalizowana pod kątem minimalnego zużycia pamięci RAM na instancji darmowego pakietu AWS (`t3.micro`).
+   * Zastępuje zasobożerne stosy typu ELK czy Grafana Loki.
 
-## 3. Architektura i Przepływ Danych
+4. **Wizualizacja i Analityka (Grafana):**
+   * Interaktywny dashboard prezentujący mapę ataków w czasie rzeczywistym, statystyki najczęściej testowanych haseł i nazw użytkowników.
+   * Panel dostępny wyłącznie lokalnie przez bezpieczny tunel SSH (brak publicznego portu 3000 w internecie).
 
-System składa się z kilku współpracujących ze sobą komponentów.
+5. **Podsłuch Pakietów (tcpdump):**
+   * Usługa systemowa działająca w tle, rejestrująca surowy ruch sieciowy na porcie 22 do rotowanych plików `.pcap` (do głębszej analizy w Wireshark).
 
-**Krok 1: Provisioning Infrastruktury (Terraform)**
-1.  Użytkownik uzupełnia plik `terraform.tfvars` swoimi sekretami i uruchamia `terraform apply`.
-2.  Terraform tworzy w AWS instancję EC2 oraz grupę bezpieczeństwa (firewall), która:
-    - Otwiera port **22 (SSH)** na świat (pułapka honeypota).
-    - Otwiera port **22222 (zarządzanie SSH)** wyłącznie dla Twojego adresu IP.
-    - Blokuje wszelki inny ruch przychodzący.
+6. **Kordon Sanitarny (Reguły iptables):**
+   * Reguły firewall blokujące ruch wychodzący z kontenera pułapki na porty HTTP/HTTPS (80, 443), DNS (53) i SMTP (25), uniemożliwiające wykorzystanie honeypota do rozsyłania złośliwego oprogramowania czy spamu.
 
-**Krok 2: Automatyczna Konfiguracja (Skrypt `user_data.tftpl`)**
-Gdy instancja EC2 startuje, wykonuje skrypt wygenerowany z szablonu `user_data.tftpl`, który:
-1.  Instaluje i konfiguruje wszystkie niezbędne pakiety (`docker`, `docker-compose`, `tcpdump`).
-2.  **Wstrzykuje sekrety** (hasło Grafany, klucze MaxMind) przekazane przez Terraform do konfiguracji kontenerów.
-3.  Dynamicznie generuje plik `docker-compose.yml` oraz konfiguracje dla pozostałych usług.
-4.  Zmienia domyślny port SSH serwera na **22222**.
-5.  Konfiguruje `iptables` do przekierowania ruchu z portu 22 na port kontenera Cowrie.
-6.  Uruchamia `tcpdump` jako usługę w tle.
-7.  Uruchamia cały stos aplikacji za pomocą `docker-compose up -d`.
+---
 
-**Krok 3: Atak i Przechwycenie Danych (Cowrie)**
-1.  Atakujący łączy się z portem 22 na publicznym IP serwera.
-2.  `iptables` transparentnie przekierowuje jego połączenie do kontenera **Cowrie**.
-3.  Cowrie emuluje serwer i zapisuje wszystkie interakcje do logów w formacie JSON.
+## Schemat Połączeń Sieciowych
 
-**Krok 4: Agregacja i Wizualizacja (Promtail -> VictoriaLogs -> Grafana)**
-1.  **Promtail** monitoruje logi Cowrie.
-2.  Gdy pojawia się nowy wpis, Promtail odczytuje go, wzbogaca o dane **GeoIP** i wysyła do **VictoriaLogs**.
-3.  **VictoriaLogs** to wydajna baza danych zoptymalizowana do przechowywania i przeszukiwania logów.
-4.  **Grafana** łączy się z VictoriaLogs i wizualizuje dane na dashboardach (mapy, wykresy, tabele).
+```mermaid
+flowchart TD
+    Attacker["Atakujący / Botnet z internetu"] -->|"Port 22 (Publiczny)"| SecurityGroup["AWS Security Group (Firewall)"]
+    Admin["Administrator (Twoje IP)"] -->|"Port 22222 (Zarządzanie)"| SecurityGroup
 
-## 4. Struktura Projektu
+    subgraph VPC["VPC (10.0.0.0/16)"]
+        SecurityGroup -->|"Ruch z portu 22"| Cowrie["Kontener Cowrie (Pułapka SSH :2222)"]
+        SecurityGroup -->|"Ruch z portu 22222"| RealSSH["Prawdziwy demon SSH (Port 22222)"]
 
-```
-.
-├── main.tf                # Główny plik Terraform definiujący infrastrukturę AWS
-├── variables.tf           # Definicje zmiennych (w tym sekretów) dla Terraform
-├── user_data.tftpl        # Szablon skryptu do automatycznej konfiguracji instancji EC2
-├── .gitignore             # Plik zapobiegający wysyłaniu sekretów i plików stanu do Git
-└── README.md              # Ten plik
+        subgraph DockerStack["Stos Kontenerów Docker"]
+            Cowrie -->|"Logi JSON"| CowrieVolume[("Wolumen cowrie-log")]
+            CowrieVolume --> Promtail["Promtail (Parser logów)"]
+            GeoIP[("Baza MaxMind GeoLite2")] -->|"Enrichment (Kraj, Miasto)"| Promtail
+            Promtail -->|"Logi ze współrzędnymi"| VictoriaLogs[("Baza VictoriaLogs :9428")]
+            VictoriaLogs --> Grafana["Grafana (Dashboard :3000)"]
+        end
+
+        subgraph System["Usługi Systemowe"]
+            TCPDump["tcpdump (Zrzut pakietów do PCAP)"]
+        end
+    end
+
+    Admin -.->|"Tunel SSH :3000"| Grafana
 ```
 
-## 5. Wymagania
+---
 
-1.  Konto w **AWS**.
-2.  Zainstalowane i skonfigurowane **AWS CLI** z poświadczeniami dostępowymi.
-3.  Zainstalowany **Terraform** (wersja 1.1.2 lub nowsza).
-4.  **Klucz licencyjny i ID konta MaxMind GeoLite2**. Można je uzyskać za darmo po rejestracji na [stronie MaxMind](https://www.maxmind.com/en/geolite2/signup).
+## Prezentacja działania systemu
 
-## 6. Instrukcja Uruchomienia
+### 1. Panel Grafana – Analiza ataków i geolokalizacja GeoIP w czasie rzeczywistym
+![Dashboard Grafana](docs/images/grafana-dashboard.png)
 
-1.  **Sklonuj to repozytorium**.
+### 2. Emulowane środowisko Cowrie – Widok z perspektywy atakującego
+![Widok Cowrie](docs/images/cowrie-shell.png)
 
-2.  **Stwórz parę kluczy SSH w konsoli AWS**:
-    - Przejdź do usługi **EC2** -> `Key Pairs`.
-    - Stwórz nową parę kluczy o nazwie **`projekt-bsk2-key`** w formacie `.pem`.
-    - Pobierz plik `projekt-bsk2-key.pem` i umieść go w głównym katalogu projektu.
+### 3. Aktywne kontenery stosu honeypota (`docker ps`)
+![Kontenery Docker](docs/images/docker-containers.png)
 
-3.  **Skonfiguruj sekrety**:
-    - Stwórz plik `terraform.tfvars`.
-    - Otwórz `terraform.tfvars` i uzupełnij go swoimi danymi:
-      ```hcl
-      grafana_admin_password  = "TWOJE_BARDZO_SILNE_HASLO"
-      geoipupdate_account_id  = "TWOJE_ID_KONTA_MAXMIND"
-      geoipupdate_license_key = "TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
-      ```
+---
 
-4.  **Zainicjuj Terraform**:
-    ```bash
-    terraform init
-    ```
+## Decyzje architektoniczne i bezpieczeństwo
 
-5.  **Wdróż infrastrukturę**:
-    ```bash
-    terraform apply
-    ```
-    Po kilku minutach Terraform wyświetli publiczny adres IP instancji oraz gotowe komendy do połączenia.
+### 1. Separacja portu pułapki (22) i portu administracyjnego (22222)
+* **Jak było:** Tradycyjne serwery Linux nasłuchują na porcie 22 na potrzeby administracji.
+* **Dlaczego zmieniono:** Aby port 22 mógł posłużyć jako publiczna pułapka na boty, prawdziwy demon SSH musiał zostać przeniesiony na inny port.
+* **Co zrobiono:** Podczas startu instancji skrypt instalacyjny rekonfiguruje OpenSSH na port 22222 i blokuje dostęp do niego w Security Group wyłącznie dla zaufanego adresu IP administratora. Port 22 zostaje uwolniony i przekazany kontenerowi Cowrie.
 
-## 7. Dostęp i Analiza Danych
+### 2. Zastąpienie Grafana Loki przez VictoriaLogs
+* **Jak było:** Pierwotna wersja projektu wykorzystywała Grafana Loki jako silnik przechowywania logów.
+* **Dlaczego zmieniono:** Loki wraz z zależnościami wymaga znacznych zasobów pamięci RAM, co na maszynach AWS Free Tier (`t2.micro` / `t3.micro` z 1 GB RAM) wywoływało przeciążenia i zabijanie procesów przez mechanizm OOM Killer.
+* **Co zrobiono:** Wdrożono bazę VictoriaLogs, która zużywa ułamek pamięci, jest wybitnie szybka i natywnie integruje się z Grafaną za pośrednictwem dedykowanego pluginu.
 
-1.  **Stwórz tunel SSH do Grafany** (komenda zostanie wyświetlona na wyjściu `terraform apply`):
-    ```bash
-    ssh -i projekt-bsk2-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@<PUBLICZNE_IP>
-    ```
-2.  Otwórz przeglądarkę i wejdź na `http://localhost:3000`.
-3.  Zaloguj się do Grafany (użytkownik: `admin`, hasło: to, które ustawiłeś w pliku `terraform.tfvars`).
-4.  Dashboard powinien zostać automatycznie zaimportowany. Jeśli nie, możesz go dodać ręcznie, używając VictoriaLogs jako źródła danych.
+### 3. Zabezpieczenie panelu Grafany tunelem SSH (Zero Public Port 3000)
+* **Jak było:** Panele wizualizacyjne bywają wystawiane bezpośrednio do internetu na porcie 3000.
+* **Dlaczego zmieniono:** Publiczny panel analityczny to kolejny wektor ataku oraz ryzyko nieautoryzowanego wglądu w zebrane dane wywiadowcze o atakach.
+* **Co zrobiono:** Port 3000 jest całkowicie odcięty w Security Group. Dostęp do dashboardu odbywa się wyłącznie za pośrednictwem szyfrowanego tunelu SSH forwardowanego na `localhost:3000`.
 
-5.  Pobierz pliki z przechwyconym ruchem (`.pcap`) za pomocą `scp` (komenda również na wyjściu `terraform apply`):
-    ```bash
-    scp -i projekt-bsk2-key.pem -P 22222 "ubuntu@<PUBLICZNE_IP>:/opt/honeypot/pcap_data/*.pcap" .
-    ```
+### 4. Kordon sanitarny w iptables (Egress containment)
+* **Jak było:** Domyślnie kontenery Dockera mają pełny dostęp wychodzący do internetu.
+* **Dlaczego zmieniono:** Jeśli atakujący uzyska dostęp do emulowanej powłoki Cowrie, może próbować pobierać zewnętrzne exploity (`wget`/`curl`) lub wysyłać spam (port 25).
+* **Co zrobiono:** Wdrożono reguły `iptables` blokujące ruch wychodzący z podsieci kontenera Cowrie na porty 80, 443, 53 i 25, skutecznie izolując środowisko.
 
-## 8. Usuwanie Infrastruktury
+---
 
-Aby usunąć wszystkie zasoby stworzone w AWS i uniknąć kosztów, wykonaj polecenie:
+## Uruchomienie
+
+### Wymagania wstępne:
+* [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.5.0
+* [AWS CLI](https://aws.amazon.com/cli/) skonfigurowane z uprawnieniami do EC2 i VPC
+* Darmowe konto i klucz licencyjny [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) (do geolokalizacji ataków)
+
+### 1. Przygotowanie klucza SSH:
+Utwórz parę kluczy SSH w konsoli AWS EC2 (lub przez AWS CLI):
 ```bash
-terraform destroy -auto-approve
+aws ec2 create-key-pair --key-name honeypot-key --query 'KeyMaterial' --output text > honeypot-key.pem
+chmod 400 honeypot-key.pem
+```
+
+### 2. Konfiguracja zmiennych:
+Skopiuj plik szablonu i uzupełnij sekrety:
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edytuj `terraform.tfvars`:
+```hcl
+key_name                = "honeypot-key"
+grafana_admin_password  = "TwojeSilneHasloGrafana123!"
+geoipupdate_account_id  = "TWOJE_ID_KONTA_MAXMIND"
+geoipupdate_license_key = "TWOJ_KLUCZ_LICENCYJNY_MAXMIND"
+```
+
+### 3. Wdrożenie infrastruktury:
+```bash
+terraform init
+terraform apply
+```
+Po zakończeniu wdrożenia Terraform wyświetli publiczny adres IP serwera oraz gotowe polecenia dostępu.
+
+### 4. Przetestowanie pułapki (Symulacja ataku):
+Spróbuj zalogować się na publiczny port 22 jako nieautoryzowany użytkownik:
+```bash
+ssh root@<PUBLICZNE_IP>
+```
+Podaj dowolne hasło (np. `root`, `123456`). Cowrie wpuści Cię do emulowanego środowiska i zarejestruje Twoją sesję.
+
+### 5. Dostęp do dashboardu Grafana:
+Zestaw bezpieczny tunel SSH:
+```bash
+ssh -i honeypot-key.pem -L 3000:localhost:3000 -p 22222 ubuntu@<PUBLICZNE_IP>
+```
+Otwórz przeglądarkę i przejdź pod adres: `http://localhost:3000` (login: `admin`, hasło z `terraform.tfvars`).
+
+### 6. Pobranie zrzutów ruchu sieciowego (PCAP):
+```bash
+scp -i honeypot-key.pem -P 22222 "ubuntu@<PUBLICZNE_IP>:/opt/honeypot/pcap_data/*.pcap" .
+```
+
+### 7. Usunięcie środowiska:
+Aby usunąć instancję i uniknąć kosztów:
+```bash
+terraform destroy
+```
+
+---
+
+## Struktura projektu
+
+```text
+.
+├── docs/
+│   └── images/             # Zrzuty ekranu z działającego środowiska i panelu Grafana
+├── main.tf                 # Infrastruktura AWS: VPC, podsieć, Security Group, EC2
+├── variables.tf            # Definicje zmiennych i parametrów konfiguracyjnych
+├── outputs.tf              # Gotowe polecenia CLI (tunel SSH, pobieranie PCAP, test ataku)
+├── user_data.tftpl         # Szablon instalacyjny (Docker, Cowrie, VictoriaLogs, Promtail, iptables)
+├── terraform.tfvars.example# Wzorcowy plik konfiguracyjny ze zmiennymi
+├── .gitignore              # Blokada plików stanu (.tfstate), kluczy (.pem) i sekretów
+└── README.md               # Dokumentacja techniczna projektu
 ```
